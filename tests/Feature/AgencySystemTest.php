@@ -317,6 +317,27 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'membership']);
         $this->get('/quote_view?id='.$quote->id.'&lang=ar')->assertOk()->assertSee('ملخص العرض')->assertSee($items[0]->description_ar);
         $this->get('/quote/share/'.$quote->share_token.'?lang=he')->assertOk()->assertSee('סיכום הצעה')->assertSee($items[0]->description_he);
+        $this->get('/quote_studio')->assertOk()->assertSee('Quote Journey Test')->assertSee('Prospect');
+    }
+
+    public function test_global_language_direction_and_refined_quote_plans_are_available(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+
+        $this->from('/quote_studio')->post('/ui-language', ['locale'=>'he'])
+            ->assertRedirect('/quote_studio')
+            ->assertSessionHas('ui_locale', 'he');
+
+        $this->get('/quote_studio')
+            ->assertOk()
+            ->assertSee('<html lang="he" dir="rtl">', false)
+            ->assertSee('8 חודשים')
+            ->assertSee('סושיאל בסיסי')
+            ->assertSee('quote-scope-modal')
+            ->assertSee('existing-relationship');
+
+        $this->assertDatabaseHas('quote_support_plans', ['code'=>'8_months','duration_months'=>8]);
+        $this->assertDatabaseHas('quote_memberships', ['code'=>'growth','name'=>'Social Media Essentials']);
     }
 
     public function test_super_admin_can_edit_role_details_and_permissions(): void

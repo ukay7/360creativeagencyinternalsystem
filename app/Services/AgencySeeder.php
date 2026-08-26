@@ -303,6 +303,7 @@ final class AgencySeeder
     private static function ensureQuoteStudio(Database $db): void
     {
         $now = now()->toDateTimeString();
+        self::ensureQuotePlans($db);
         $profiles = [
             'Website Design' => ['تصميم المواقع','עיצוב אתרים','UX/UI design, responsive page layouts, and a conversion-focused visual system.','تصميم UX/UI وتخطيطات متجاوبة ونظام بصري يركز على التحويل.','עיצוב UX/UI, פריסות רספונסיביות ומערכת חזותית ממוקדת המרה.'],
             'Website Development' => ['تطوير المواقع','פיתוח אתרים','Responsive front-end and CMS development, forms, analytics, launch, and quality assurance.','تطوير واجهة متجاوبة ونظام إدارة محتوى ونماذج وتحليلات وإطلاق واختبار جودة.','פיתוח רספונסיבי ו-CMS, טפסים, אנליטיקה, השקה ובקרת איכות.'],
@@ -345,6 +346,17 @@ final class AgencySeeder
             ],
         ];
 
+        $tierGuidance = [
+            'basic'=>[' Delivered as a focused single-location foundation with one primary workflow and essential launch handover.',' يتم تقديمها كأساس عملي لموقع واحد مع سير عمل رئيسي وتسليم أساسي عند الإطلاق.',' נמסר כבסיס ממוקד למיקום אחד, עם תהליך מרכזי והדרכת השקה בסיסית.'],
+            'medium'=>[' Delivered with expanded multi-page scope, two key workflows, analytics, optimization, and team handover.',' يتم تقديمها بنطاق موسع متعدد الصفحات وسيري عمل أساسيين وتحليلات وتحسين وتسليم للفريق.',' נמסר בהיקף רב-עמודי מורחב, שני תהליכים מרכזיים, אנליטיקה, אופטימיזציה והדרכת צוות.'],
+            'pro'=>[' Delivered as an advanced scalable system with custom workflows, integrations, automation, testing, and documented handover.',' يتم تقديمها كنظام متقدم قابل للتوسع مع مسارات مخصصة وتكاملات وأتمتة واختبار وتسليم موثق.',' נמסר כמערכת מתקדמת וניתנת להרחבה עם תהליכים מותאמים, אינטגרציות, אוטומציה, בדיקות ותיעוד.'],
+        ];
+        $developmentScopes = [
+            'basic'=>['Up to 5 responsive pages in a CMS, contact form, Google Analytics, basic on-page SEO, device testing, launch, and a 60-minute handover.','حتى 5 صفحات متجاوبة على نظام إدارة محتوى ونموذج تواصل وتحليلات Google وتحسين أساسي واختبار وإطلاق وجلسة تسليم 60 دقيقة.','עד 5 עמודים רספונסיביים ב-CMS, טופס יצירת קשר, Google Analytics, SEO בסיסי, בדיקות, השקה והדרכה של 60 דקות.'],
+            'medium'=>['Up to 10 CMS pages, blog/news, advanced forms, analytics and conversion events, speed optimization, staging, cross-device QA, launch, and team training.','حتى 10 صفحات ونظام مدونة ونماذج متقدمة وتحليلات للأهداف وتحسين سرعة وبيئة تجريب واختبار شامل وإطلاق وتدريب الفريق.','עד 10 עמודי CMS, בלוג, טפסים מתקדמים, אירועי המרה, שיפור מהירות, סביבת בדיקות, QA, השקה והדרכת צוות.'],
+            'pro'=>['Up to 20 CMS pages with custom content structures, gated or multilingual sections, CRM/payment/API integrations, automation, accessibility and performance QA, deployment, documentation, and administrator training.','حتى 20 صفحة بهياكل محتوى مخصصة وأقسام محمية أو متعددة اللغات وتكامل CRM أو دفع أو API وأتمتة واختبار وصول وأداء ونشر وتوثيق وتدريب المدير.','עד 20 עמודי CMS עם מבני תוכן מותאמים, אזורים מוגנים או רב-לשוניים, אינטגרציות CRM/סליקה/API, אוטומציה, בדיקות נגישות וביצועים, תיעוד והדרכת מנהל.'],
+        ];
+
         $order = 1;
         foreach ($tiers as $tier => [$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$items]) {
             $package = $db->first("SELECT id FROM packages WHERE package_type='quote_setup' AND tier=? LIMIT 1", [$tier]);
@@ -369,16 +381,49 @@ final class AgencySeeder
                 $service = $db->first('SELECT id,description,description_ar,description_he,cost_estimate,estimated_hours FROM services WHERE name=?', [$serviceName]);
                 if (! $service) { continue; }
                 $prefix = ucfirst($tier).' scope: ';
+                $description = $serviceName === 'Website Development' ? $developmentScopes[$tier][0] : $prefix.$service['description'].$tierGuidance[$tier][0];
+                $descriptionAr = $serviceName === 'Website Development' ? $developmentScopes[$tier][1] : ($tier==='basic'?'النطاق الأساسي: ':($tier==='medium'?'النطاق المتوسط: ':'النطاق الاحترافي: ')).$service['description_ar'].$tierGuidance[$tier][1];
+                $descriptionHe = $serviceName === 'Website Development' ? $developmentScopes[$tier][2] : ($tier==='basic'?'היקף בסיסי: ':($tier==='medium'?'היקף ביניים: ':'היקף מקצועי: ')).$service['description_he'].$tierGuidance[$tier][2];
                 $db->insert('package_items', [
                     'package_id'=>$packageId,'service_id'=>$service['id'],'quantity'=>1,'unit_price'=>$price,
-                    'scope_note'=>$prefix.$service['description'],'description'=>$prefix.$service['description'],
-                    'description_ar'=>($tier==='basic'?'النطاق الأساسي: ':($tier==='medium'?'النطاق المتوسط: ':'النطاق الاحترافي: ')).$service['description_ar'],
-                    'description_he'=>($tier==='basic'?'היקף בסיסי: ':($tier==='medium'?'היקף ביניים: ':'היקף מקצועי: ')).$service['description_he'],
+                    'scope_note'=>$description,'description'=>$description,
+                    'description_ar'=>$descriptionAr,
+                    'description_he'=>$descriptionHe,
                     'included'=>1,'sort_order'=>$itemOrder,'estimated_cost'=>$service['cost_estimate'],'estimated_hours'=>$service['estimated_hours'],
                 ]);
                 $itemOrder++;
             }
             $order++;
+        }
+    }
+
+    private static function ensureQuotePlans(Database $db): void
+    {
+        $supportPlans = [
+            ['none','No support','بدون دعم','ללא תמיכה','No technical support commitment.','بدون التزام بالدعم الفني.','ללא התחייבות לתמיכה טכנית.',0,0,0,1],
+            ['3_months','3 months','3 أشهر','3 חודשים','Priority technical support for three months.','دعم فني ذو أولوية لمدة ثلاثة أشهر.','תמיכה טכנית בעדיפות לשלושה חודשים.',25,1,3,2],
+            ['6_months','6 months','6 أشهر','6 חודשים','Extended technical support for six months.','دعم فني ممتد لمدة ستة أشهر.','תמיכה טכנית מורחבת לשישה חודשים.',20,2,6,3],
+            ['8_months','8 months','8 أشهر','8 חודשים','Continuity support across an eight-month delivery period.','دعم استمراري خلال فترة تنفيذ مدتها ثمانية أشهر.','תמיכת המשכיות לאורך תקופת ביצוע של שמונה חודשים.',18,3,8,4],
+            ['12_months','12 months','12 شهراً','12 חודשים','Annual technical support and continuity coverage.','دعم فني سنوي وتغطية استمرارية.','תמיכה טכנית שנתית וכיסוי המשכיות.',18,4,12,5],
+        ];
+        foreach ($supportPlans as [$code,$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$rate,$multiplier,$months,$sort]) {
+            $values=['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'rate_percent'=>$rate,'multiplier'=>$multiplier,'duration_months'=>$months,'active'=>1,'sort_order'=>$sort];
+            $existing=$db->first('SELECT id FROM quote_support_plans WHERE code=?',[$code]);
+            if($existing){$db->update('quote_support_plans',(int)$existing['id'],$values);}else{$db->insert('quote_support_plans',['code'=>$code]+$values);}
+        }
+
+        $memberships = [
+            ['none','No membership','بدون عضوية','ללא חברות','Setup-only engagement.','تنفيذ الإعداد فقط.','התקשרות להקמה בלבד.',0,0,1],
+            ['starter','Website Care','العناية بالموقع','תחזוקת אתר','Updates, backups, uptime monitoring, security checks, and up to two minor content changes monthly.','تحديثات ونسخ احتياطي ومراقبة وتشخيص أمان وتعديلان بسيطان للمحتوى شهرياً.','עדכונים, גיבויים, ניטור, בדיקות אבטחה ועד שני שינויי תוכן קטנים בחודש.',495,0,2],
+            ['growth','Social Media Essentials','أساسيات التواصل الاجتماعي','סושיאל בסיסי','Two platforms, 12 monthly posts, scheduling, community monitoring, and a performance report.','منصتان و12 منشوراً شهرياً وجدولة ومتابعة المجتمع وتقرير أداء.','שתי פלטפורמות, 12 פוסטים בחודש, תזמון, ניטור קהילה ודוח ביצועים.',1495,1,3],
+            ['premium','Social Media Growth','نمو التواصل الاجتماعي','צמיחת סושיאל','Three platforms, 20 monthly posts, short-form video, community management, and monthly optimization.','ثلاث منصات و20 منشوراً شهرياً وفيديو قصير وإدارة مجتمع وتحسين شهري.','שלוש פלטפורמות, 20 פוסטים בחודש, וידאו קצר, ניהול קהילה ואופטימיזציה חודשית.',2495,0,4],
+            ['seo_reputation','SEO & Reputation','تحسين البحث والسمعة','SEO ומוניטין','Local SEO, keyword tracking, Google Business updates, review monitoring, and monthly reporting.','تحسين محلي وتتبع كلمات وتحديث ملف Google ومتابعة التقييمات وتقارير شهرية.','SEO מקומי, מעקב מילות מפתח, עדכוני Google Business, ניטור ביקורות ודוח חודשי.',995,0,5],
+            ['content_creation','Content Creation','إنشاء المحتوى','יצירת תוכן','A monthly bank of branded copy, graphics, and platform-ready creative assets.','حزمة شهرية من النصوص والتصاميم والأصول الإبداعية الجاهزة للنشر.','בנק חודשי של קופי, גרפיקה ונכסים יצירתיים מוכנים לפרסום.',1295,0,6],
+        ];
+        foreach ($memberships as [$code,$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$price,$featured,$sort]) {
+            $values=['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'monthly_price'=>$price,'featured'=>$featured,'active'=>1,'sort_order'=>$sort];
+            $existing=$db->first('SELECT id FROM quote_memberships WHERE code=?',[$code]);
+            if($existing){$db->update('quote_memberships',(int)$existing['id'],$values);}else{$db->insert('quote_memberships',['code'=>$code]+$values);}
         }
     }
 

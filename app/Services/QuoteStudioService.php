@@ -21,6 +21,7 @@ final class QuoteStudioService
         }
 
         $proposal = $proposalId > 0 ? $this->quote($proposalId) : null;
+        $relationships = $this->relationshipOptions();
 
         return [
             'company' => config('quote_studio.company'),
@@ -30,7 +31,8 @@ final class QuoteStudioService
             'packages' => $packages,
             'supportPlans' => $this->db->all('SELECT * FROM quote_support_plans WHERE active=1 ORDER BY sort_order,id'),
             'memberships' => $this->db->all('SELECT * FROM quote_memberships WHERE active=1 ORDER BY sort_order,id'),
-            'clients' => $this->db->all('SELECT c.id,c.name AS contact_name,c.email,c.phone,b.name AS business_name,b.website,b.years_in_business FROM clients c JOIN businesses b ON b.id=c.business_id WHERE c.status=\'active\' ORDER BY b.name'),
+            'relationships' => $relationships,
+            'clients' => array_values(array_filter($relationships, static fn(array $row): bool => $row['type'] === 'client')),
             'proposal' => $proposal,
         ];
     }
@@ -263,8 +265,20 @@ final class QuoteStudioService
 
     private function relationshipIds(array $input, ?array $existing, string $businessName, string $contactName, string $email, float $value, int $score): array
     {
-        $clientId = max(0,(int)($input['client_id'] ?? $existing['client_id'] ?? 0)) ?: null;
+        $relationship = trim((string)($input['existing_relationship'] ?? ''));
+        $clientId = null;
         $leadId = max(0,(int)($existing['lead_id'] ?? 0)) ?: null;
+        if (preg_match('/^(client|lead):(\d+)$/', $relationship, $matches)) {
+            if ($matches[1] === 'client') {
+                $clientId = (int)$matches[2];
+                $leadId = null;
+            } else {
+                $leadId = (int)$matches[2];
+                $clientId = null;
+            }
+        } else {
+            $clientId = max(0,(int)($input['client_id'] ?? $existing['client_id'] ?? 0)) ?: null;
+        }
         $opportunityId = max(0,(int)($existing['opportunity_id'] ?? 0)) ?: null;
         if ($clientId) { return [$leadId,$clientId,$opportunityId]; }
         if (! $leadId) {
@@ -284,6 +298,28 @@ final class QuoteStudioService
             $this->db->execute('UPDATE opportunities SET estimated_value=?,updated_at=? WHERE id=?',[$value,date('c'),$opportunityId]);
         }
         return [$leadId,null,$opportunityId];
+    }
+
+    private function relationshipOptions(): array
+    {
+        $clients = $this->db->all("SELECT c.id,'client' AS type,c.name AS contact_name,c.email,c.phone,b.name AS business_name,b.website,b.years_in_business,'existing_business' AS business_stage FROM clients c JOIN businesses b ON b.id=c.business_id WHERE c.status='active'");
+        foreach ($clients as &$client) {
+            $client['key'] = 'client:'.(int)$client['id'];
+            $client['record_label'] = 'Client';
+        }
+        unset($client);
+
+        $prospects = $this->db->all("SELECT l.id,'lead' AS type,TRIM(CONCAT(l.first_name,' ',l.last_name)) AS contact_name,l.email,l.phone,l.company_name AS business_name,l.website,l.business_stage,CASE l.years_in_business_range WHEN 'under_1' THEN 0 WHEN '1_2' THEN 2 WHEN '3_5' THEN 4 WHEN '6_10' THEN 8 WHEN '10_plus' THEN 12 ELSE 0 END AS years_in_business FROM leads l WHERE l.converted_client_id IS NULL AND l.status<>'lost'");
+        foreach ($prospects as &$prospect) {
+            $prospect['key'] = 'lead:'.(int)$prospect['id'];
+            $prospect['record_label'] = 'Prospect';
+        }
+        unset($prospect);
+
+        $relationships = array_merge($clients, $prospects);
+        usort($relationships, static fn(array $left, array $right): int => strcasecmp((string)$left['business_name'], (string)$right['business_name']));
+
+        return $relationships;
     }
 
     private function assessmentScore(array $answers): int

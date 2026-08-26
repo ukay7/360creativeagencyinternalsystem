@@ -10,6 +10,7 @@ Route::post('/login', [AuthController::class, 'store'])->name('login.store');
 Route::get('/quote/share/{token}', [AgencyController::class, 'publicQuote'])->where('token', '[A-Za-z0-9]+')->name('quote.public');
 
 Route::middleware('auth')->group(function (): void {
+    Route::post('/ui-language', [AgencyController::class, 'setLanguage'])->name('ui.language');
     Route::get('/{module}/{extra?}', [AgencyController::class, 'show'])->where('module', '[a-z_]+')->name('agency.show');
     Route::post('/{module}/{extra?}', [AgencyController::class, 'action'])->where('module', '[a-z_]+')->name('agency.action');
 });

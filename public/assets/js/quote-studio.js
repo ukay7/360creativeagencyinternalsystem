@@ -76,7 +76,7 @@
             var tr = document.createElement('tr'); tr._packageItem = item;
             tr.innerHTML = '<td><label class="quote-check"><input class="quote-item-enabled" type="checkbox" '+(enabled?'checked':'')+'><span></span></label></td>'+
                 '<td><span class="quote-row-number">'+(index+1)+'</span></td>'+
-                '<td><strong>'+esc(title)+'</strong><small><b>'+esc(item.category || '')+'</b> · '+esc(description)+'</small></td>'+
+                '<td><div class="quote-service-title"><strong>'+esc(title)+'</strong><button type="button" class="quote-scope-help" data-scope-help title="'+esc(dictionary('scope_details'))+'" aria-label="'+esc(dictionary('scope_details'))+'">?</button></div><small><b>'+esc(item.category || '')+'</b> · '+esc(description)+'</small></td>'+
                 '<td class="quote-list-price">'+money(list)+'</td>'+
                 '<td><input class="quote-price-input quote-item-discount" type="number" min="0" max="100" step="0.01" value="'+esc(discount)+'"></td>'+
                 '<td><input class="quote-price-input quote-item-custom" type="number" min="0" step="0.01" value="'+esc(custom)+'" placeholder="Custom"></td>'+
@@ -96,7 +96,7 @@
             row.classList.toggle('excluded', !enabled);
             row.querySelector('.quote-final-price').textContent = enabled ? money(total) : money(0);
         });
-        readRows(); updateReview();
+        readRows(); renderPlans(); updateReview();
     }
 
     function assessmentState() {
@@ -114,18 +114,24 @@
     }
 
     function renderPlans() {
+        var setupAmount=activeItems.reduce(function(sum,item){return sum+Number(item.final_price||0);},0);
         var supportHost=document.getElementById('support-plan-options'); supportHost.innerHTML='';
         (data.supportPlans || []).forEach(function(plan){
             var button=document.createElement('button'); button.type='button'; button.className='quote-plan-card'+(plan.code===supportCode?' active':''); button.dataset.support=plan.code;
-            var pricing=Number(plan.rate_percent)>0 ? Number(plan.rate_percent)+'% × '+Number(plan.multiplier) : dictionary('no_support');
+            var amount=setupAmount*Number(plan.rate_percent||0)/100*Number(plan.multiplier||0);
+            var pricing=Number(plan.rate_percent)>0 ? Number(plan.rate_percent)+'% × '+Number(plan.multiplier)+' = '+money(amount) : dictionary('no_support');
             button.innerHTML='<strong>'+esc(localized(plan,'name'))+'</strong><span>'+esc(pricing)+'</span><small>'+esc(localized(plan,'description'))+'</small>'; supportHost.appendChild(button);
         });
         var memberHost=document.getElementById('membership-plan-options'); memberHost.innerHTML='';
         (data.memberships || []).forEach(function(plan){
             var button=document.createElement('button'); button.type='button'; button.className='quote-plan-card'+(plan.code===membershipCode?' active':''); button.dataset.membership=plan.code;
             var pricing=Number(plan.monthly_price)>0 ? money(plan.monthly_price)+'/mo' : dictionary('no_membership');
-            button.innerHTML='<strong>'+esc(localized(plan,'name'))+'</strong><span>'+esc(pricing)+'</span><small>'+esc(localized(plan,'description'))+'</small>'+(Number(plan.featured)?'<em>MOST POPULAR</em>':''); memberHost.appendChild(button);
+            button.innerHTML='<strong>'+esc(localized(plan,'name'))+'</strong><span>'+esc(pricing)+'</span><small>'+esc(localized(plan,'description'))+'</small>'+(Number(plan.featured)?'<em>'+esc(dictionary('most_popular'))+'</em>':''); memberHost.appendChild(button);
         });
+        var amount=totals();
+        document.getElementById('plan-setup-total').textContent=money(amount.setup);
+        document.getElementById('plan-support-total').textContent=money(amount.support);
+        document.getElementById('plan-membership-total').textContent=money(amount.membership)+'/mo';
     }
 
     function selectedSupport() { return (data.supportPlans || []).find(function(plan){return plan.code===supportCode;}) || {rate_percent:0,multiplier:0}; }
@@ -162,14 +168,18 @@
     }
     function validCurrentStep(){if(step!==1)return true;var fields=root.querySelector('[data-step="1"]').querySelectorAll('[required]');for(var i=0;i<fields.length;i++){if(!fields[i].checkValidity()){fields[i].reportValidity();return false;}}return true;}
 
-    document.getElementById('quote-locale').addEventListener('change',function(){locale=this.value;applyLanguage();});
+    var localeSelector=document.getElementById('quote-locale');
+    if(localeSelector)localeSelector.addEventListener('change',function(){locale=this.value;applyLanguage();});
     document.getElementById('tier-override').addEventListener('change',function(){tier=this.value;renderServices(false);});
     root.addEventListener('click',function(event){
         var tierButton=event.target.closest('[data-tier]');if(tierButton){tier=tierButton.dataset.tier;renderServices(false);return;}
         var supportButton=event.target.closest('[data-support]');if(supportButton){supportCode=supportButton.dataset.support;renderPlans();updateReview();return;}
         var memberButton=event.target.closest('[data-membership]');if(memberButton){membershipCode=memberButton.dataset.membership;renderPlans();updateReview();return;}
+        var scopeButton=event.target.closest('[data-scope-help]');if(scopeButton){var row=scopeButton.closest('tr');var item=row&&row._packageItem;if(item){document.getElementById('quote-scope-title').textContent=localized(item,'name');document.getElementById('quote-scope-description').textContent=localized(item,'description')||localized(item,'service_description');var modal=document.getElementById('quote-scope-modal');modal.hidden=false;document.body.classList.add('quote-modal-open');}return;}
         var stepButton=event.target.closest('[data-step-tab]');if(stepButton){var destination=Number(stepButton.dataset.stepTab);if(destination<=step||validCurrentStep())showStep(destination);}
     });
+    document.querySelectorAll('[data-scope-close]').forEach(function(button){button.addEventListener('click',function(){document.getElementById('quote-scope-modal').hidden=true;document.body.classList.remove('quote-modal-open');});});
+    document.addEventListener('keydown',function(event){if(event.key==='Escape'){document.getElementById('quote-scope-modal').hidden=true;document.body.classList.remove('quote-modal-open');}});
     document.getElementById('quote-service-rows').addEventListener('input',updatePricing);
     document.getElementById('quote-service-rows').addEventListener('change',updatePricing);
     root.querySelectorAll('.assessment-answer').forEach(function(select){select.addEventListener('change',function(){updateAssessment(!proposal);});});
@@ -178,7 +188,7 @@
     document.getElementById('quote-back').addEventListener('click',function(){showStep(step-1);});
     form.addEventListener('input',function(event){if(event.target.closest('[data-step="1"]'))updateReview();});
     form.addEventListener('submit',function(event){updateAssessment(false);updateReview();if(!activeItems.length){event.preventDefault();window.alert('Select at least one setup service.');}});
-    document.getElementById('existing-client').addEventListener('change',function(){var client=(data.clients||[]).find(function(row){return Number(row.id)===Number(this.value);},this);if(!client)return;form.elements.contact_name.value=client.contact_name||'';form.elements.business_name.value=client.business_name||'';form.elements.contact_email.value=client.email||'';form.elements.contact_phone.value=client.phone||'';form.elements.website.value=client.website||'';form.elements.years_operating.value=client.years_in_business||0;updateReview();});
+    document.getElementById('existing-relationship').addEventListener('change',function(){var relationship=(data.relationships||[]).find(function(row){return row.key===this.value;},this);if(!relationship)return;form.elements.contact_name.value=relationship.contact_name||'';form.elements.business_name.value=relationship.business_name||'';form.elements.contact_email.value=relationship.email||'';form.elements.contact_phone.value=relationship.phone||'';form.elements.website.value=relationship.website||'';form.elements.years_operating.value=relationship.years_in_business||0;if(relationship.business_stage)form.elements.business_stage.value=relationship.business_stage;updateReview();});
 
     root.querySelectorAll('[data-step-tab]').forEach(function(button){button.setAttribute('aria-selected',button.dataset.stepTab==='1'?'true':'false');});
     document.getElementById('tier-override').value=tier; renderServices(!!proposal); renderPlans(); updateAssessment(false); applyLanguage(); showStep(1);

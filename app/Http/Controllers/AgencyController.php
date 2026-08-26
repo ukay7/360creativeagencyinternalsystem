@@ -94,6 +94,17 @@ final class AgencyController extends Controller
         return response()->view('agency.quote-public',['quote'=>$quote,'company'=>config('quote_studio.company'),'locales'=>config('quote_studio.locales'),'publicMode'=>true]);
     }
 
+    public function setLanguage(Request $request): mixed
+    {
+        $locale = (string) $request->input('locale', config('ui_languages.default', 'en'));
+        if (! array_key_exists($locale, (array) config('ui_languages.locales'))) {
+            $locale = (string) config('ui_languages.default', 'en');
+        }
+        $request->session()->put('ui_locale', $locale);
+
+        return redirect()->back();
+    }
+
     public function action(Request $request, string $module = 'dashboard'): mixed
     {
         $route = $this->safeRoute(preg_replace('/[^a-z_]/', '', $module) ?: 'dashboard');

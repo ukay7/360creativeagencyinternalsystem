@@ -2,9 +2,13 @@
 $currentRoute = (string)($currentRoute ?? request()->route('module') ?? 'dashboard');
 $user = $auth->user();
 $nav = $auth->navigationItems();
+$uiLocales = (array) config('ui_languages.locales');
+$uiLocale = (string) session('ui_locale', config('ui_languages.default', 'en'));
+$uiLocale = array_key_exists($uiLocale, $uiLocales) ? $uiLocale : 'en';
+$uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="<?= e($uiLocale) ?>" dir="<?= e($uiDirection) ?>">
 <head>
     <meta charset="utf-8">
     <title>360 Creative Agency</title>
@@ -19,7 +23,7 @@ $nav = $auth->navigationItems();
     <link rel="icon" type="image/png" href="<?= e(asset('img/360-logo-final-exact.png')) ?>">
     <link rel="apple-touch-icon" href="<?= e(asset('img/360-logo-final-exact.png')) ?>">
 </head>
-<body class="mod-bg-1 nav-function-fixed">
+<body class="mod-bg-1 nav-function-fixed ui-locale-<?= e($uiLocale) ?> <?= $uiDirection === 'rtl' ? 'ui-rtl' : 'ui-ltr' ?>">
 <div class="page-wrapper">
     <div class="page-inner">
         <aside class="page-sidebar">
@@ -99,6 +103,15 @@ $nav = $auth->navigationItems();
                     <button type="submit" class="btn-search-close" aria-label="Search"><i class="fal fa-search"></i></button>
                 </form>
                 <div class="ml-auto d-flex align-items-center">
+                    <form method="post" action="<?= e(route('ui.language')) ?>" class="ui-language-switcher mr-2" data-ui-no-translate>
+                        @csrf
+                        <i class="fal fa-language" aria-hidden="true"></i>
+                        <select name="locale" aria-label="Interface language" onchange="this.form.submit()">
+                            <?php foreach ($uiLocales as $code => $language): ?>
+                                <option value="<?= e($code) ?>" <?= $uiLocale === $code ? 'selected' : '' ?>><?= e($language['native']) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </form>
                     <div class="dropdown mr-2">
                         <button class="btn btn-primary btn-sm rounded-pill px-3" data-toggle="dropdown"><i class="fal fa-plus mr-1"></i> Quick add</button>
                         <div class="dropdown-menu dropdown-menu-right p-2 quick-menu">
@@ -145,5 +158,7 @@ $nav = $auth->navigationItems();
 <script src="<?= e(asset('vendor/smartadmin-js/app.bundle.js')) ?>"></script>
 <?php if(in_array($currentRoute,['dashboard','reports'],true)): ?><script src="<?= e(asset('vendor/smartadmin-js/statistics/chartjs/chartjs.bundle.js')) ?>"></script><?php endif; ?>
 <script src="<?= e(asset('js/agencyos.js')) ?>"></script>
+<script type="application/json" id="ui-language-data"><?= json_encode(['locale'=>$uiLocale,'dir'=>$uiDirection,'translations'=>(array)config('ui_languages.translations.'.$uiLocale,[])], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?></script>
+<script src="<?= e(asset('js/ui-language.js').'?v='.(file_exists(public_path('assets/js/ui-language.js'))?filemtime(public_path('assets/js/ui-language.js')):time())) ?>"></script>
 </body>
 </html>
