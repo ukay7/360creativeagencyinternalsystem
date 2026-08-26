@@ -2,6 +2,21 @@
 
 Laravel and MySQL edition of the 360 Creative Agency operating system.
 
+## Quote & onboarding journey
+
+The previous Pre-Sale and Client Management navigation has been consolidated
+into one guided workspace:
+
+1. Client and business details
+2. Scope assessment with a Basic, Medium, or Pro recommendation
+3. Per-service setup package pricing and tier-specific descriptions
+4. Technical support and monthly membership
+5. Review, save, print/PDF, share, resend, revise, and onboard
+
+Quote Settings manages English, Arabic, and Hebrew service/package copy,
+individual prices, support calculations, and membership pricing. Shared client
+quotes support English plus RTL Arabic and Hebrew views.
+
 ## Technology
 
 - Laravel 13
@@ -68,3 +83,5 @@ php artisan test
 ```
 
 Feature tests cover authentication, every system module, and a transactional lead-to-opportunity workflow against MySQL.
+They also verify multilingual quote pricing, support/membership totals, saved
+proposal records, and public share pages.

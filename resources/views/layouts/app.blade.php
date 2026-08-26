@@ -50,7 +50,7 @@ $nav = $auth->navigationItems();
                             <?php
                             $groupActive = false;
                             foreach ($node['children'] as $child) {
-                                if ($currentRoute === $child['module'] || ($currentRoute === 'client' && $child['module'] === 'clients')) {
+                                if ($currentRoute === $child['module'] || ($currentRoute === 'client' && $child['module'] === 'clients') || ($currentRoute === 'quote_view' && $child['module'] === 'saved_quotes')) {
                                     $groupActive = true;
                                     break;
                                 }
@@ -62,7 +62,7 @@ $nav = $auth->navigationItems();
                                 </a>
                                 <ul>
                                     <?php foreach ($node['children'] as $item): ?>
-                                        <?php $itemActive = $currentRoute === $item['module'] || ($currentRoute === 'client' && $item['module'] === 'clients'); ?>
+                                        <?php $itemActive = $currentRoute === $item['module'] || ($currentRoute === 'client' && $item['module'] === 'clients') || ($currentRoute === 'quote_view' && $item['module'] === 'saved_quotes'); ?>
                                         <li class="<?= $itemActive ? 'active' : '' ?>">
                                             <a href="<?= e(url($item['route'])) ?>" title="<?= e($item['label']) ?>" data-filter-tags="<?= e(strtolower($item['label'])) ?>">
                                                 <i class="<?= e($item['icon']) ?>"></i><span class="nav-link-text"><?= e($item['label']) ?></span>
@@ -72,7 +72,7 @@ $nav = $auth->navigationItems();
                                 </ul>
                             </li>
                         <?php else: ?>
-                            <?php $itemActive = $currentRoute === $node['module'] || ($currentRoute === 'client' && $node['module'] === 'clients'); ?>
+                            <?php $itemActive = $currentRoute === $node['module'] || ($currentRoute === 'client' && $node['module'] === 'clients') || ($currentRoute === 'quote_view' && $node['module'] === 'saved_quotes'); ?>
                             <li class="<?= $itemActive ? 'active' : '' ?>">
                                 <a href="<?= e(url($node['route'])) ?>" title="<?= e($node['label']) ?>" data-filter-tags="<?= e(strtolower($node['label'])) ?>">
                                     <i class="<?= e($node['icon']) ?>"></i><span class="nav-link-text"><?= e($node['label']) ?></span>
@@ -102,7 +102,7 @@ $nav = $auth->navigationItems();
                     <div class="dropdown mr-2">
                         <button class="btn btn-primary btn-sm rounded-pill px-3" data-toggle="dropdown"><i class="fal fa-plus mr-1"></i> Quick add</button>
                         <div class="dropdown-menu dropdown-menu-right p-2 quick-menu">
-                            <?php foreach ([['leads','user-plus','Lead'],['clients','building','Client'],['proposals','file-signature','Proposal'],['projects','briefcase','Project'],['tasks','check-square','Task'],['visits','camera-retro','Visit'],['invoices','file-invoice-dollar','Invoice'],['content','calendar-plus','Content'],['media','photo-video','Media'],['time','clock','Time']] as $quick): ?>
+                            <?php foreach ([['quote_studio','file-invoice-dollar','Quote'],['clients','building','Client'],['projects','briefcase','Project'],['tasks','check-square','Task'],['visits','camera-retro','Visit'],['invoices','file-invoice-dollar','Invoice'],['content','calendar-plus','Content'],['media','photo-video','Media'],['time','clock','Time']] as $quick): ?>
                                 <a class="dropdown-item" href="<?= e(url($quick[0])) ?>#modal-add"><i class="fal fa-<?= e($quick[1]) ?> mr-2 text-primary"></i><?= e($quick[2]) ?></a>
                             <?php endforeach; ?>
                         </div>

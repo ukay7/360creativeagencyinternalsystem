@@ -21,7 +21,7 @@ class AgencySystemTest extends TestCase
         $response->assertRedirect('/dashboard');
         $this->assertAuthenticated();
 
-        foreach (['dashboard','leads','pipeline','discovery','clients','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','time','team','reports','settings','audit','search?q=client'] as $module) {
+        foreach (['dashboard','quote_studio','saved_quotes','quote_settings','leads','pipeline','discovery','clients','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','time','team','reports','settings','audit','search?q=client'] as $module) {
             $this->get('/'.$module)->assertOk()->assertSee('360 Creative Agency');
         }
     }
@@ -225,7 +225,7 @@ class AgencySystemTest extends TestCase
         $user = User::query()->findOrFail($userId);
         $this->actingAs($user);
 
-        $this->get('/leads')->assertOk()->assertSee('Leads')->assertDontSee('Sales Pipeline');
+        $this->get('/leads')->assertOk()->assertSee('Lead Management')->assertDontSee('Sales Pipeline');
         $this->get('/pipeline')->assertForbidden();
 
         DB::table('user_permissions')->insert([
@@ -250,8 +250,8 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseHas('roles', ['slug'=>'client_viewer']);
         $roleId = DB::table('roles')->where('slug', 'client_viewer')->value('id');
         $this->assertDatabaseHas('role_permissions', ['role_id'=>$roleId,'permission_id'=>$dashboardPermission]);
-        $this->assertDatabaseCount('navigation_items', 21);
-        $this->assertDatabaseCount('navigation_groups', 6);
+        $this->assertDatabaseCount('navigation_items', 24);
+        $this->assertDatabaseCount('navigation_groups', 7);
     }
 
     public function test_sidebar_uses_database_driven_sections_in_business_order(): void
@@ -261,7 +261,7 @@ class AgencySystemTest extends TestCase
         $navigation = app(\App\Services\Auth::class)->navigationItems();
 
         $this->assertSame(
-            ['Command Center', 'Pre-Sale', 'Client Management', 'Project Delivery', 'Content & Marketing', 'Operations & Finance', 'Settings'],
+            ['Command Center', 'Quote & Onboarding', 'Project Delivery', 'Content & Marketing', 'Operations & Finance', 'Settings'],
             array_column($navigation, 'label')
         );
 
@@ -272,8 +272,7 @@ class AgencySystemTest extends TestCase
             }
         }
 
-        $this->assertSame(['Leads', 'Sales Pipeline', 'Discovery'], $groups['Pre-Sale']);
-        $this->assertSame(['Clients', 'Packages', 'Services', 'Proposals', 'Contracts'], $groups['Client Management']);
+        $this->assertSame(['New Quote', 'Saved Quotes', 'Clients', 'Quote Settings'], $groups['Quote & Onboarding']);
         $this->assertSame(['Projects', 'Tasks', 'Time Tracking'], $groups['Project Delivery']);
         $this->assertSame(['Content Visits', 'Content Calendar', 'Media Library'], $groups['Content & Marketing']);
         $this->assertSame(['Agency Calendar', 'Invoices', 'Reports'], $groups['Operations & Finance']);
@@ -281,9 +280,43 @@ class AgencySystemTest extends TestCase
 
         $this->get('/settings')
             ->assertOk()
-            ->assertSee('Pre-Sale')
-            ->assertSee('Client Management')
+            ->assertSee('Quote &amp; Onboarding', false)
             ->assertSee('System Settings');
+    }
+
+    public function test_quote_studio_saves_multilingual_item_pricing_and_support(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $package=DB::table('packages')->where('package_type','quote_setup')->where('tier','basic')->first();
+        $items=DB::table('package_items')->where('package_id',$package->id)->orderBy('sort_order')->limit(2)->get();
+        $payload=$items->map(fn($item)=>[
+            'service_id'=>$item->service_id,'list_price'=>(float)$item->unit_price,'discount_percent'=>10,'custom_price'=>null,
+            'description'=>$item->description,'description_ar'=>$item->description_ar,'description_he'=>$item->description_he,
+        ])->all();
+        $answers=[];
+        foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][1]['value'];}
+
+        $response=$this->post('/quote_studio',[
+            'action'=>'save_quote','business_name'=>'Quote Journey Test','contact_name'=>'Rami Test','contact_email'=>'rami@example.test',
+            'business_stage'=>'existing_business','years_operating'=>4,'locale'=>'ar','assessment_json'=>json_encode($answers),
+            'items_json'=>json_encode($payload),'selected_tier'=>'basic','support_plan'=>'3_months','membership_plan'=>'starter',
+            'tax_enabled'=>1,'tax_percent'=>13,'validity_days'=>14,
+        ]);
+
+        $quote=DB::table('proposals')->where('business_name','Quote Journey Test')->first();
+        $response->assertRedirect('/quote_view?id='.$quote->id)->assertSessionHas('success');
+        $this->assertSame('ar',$quote->locale);
+        $this->assertSame(10,(int)$quote->assessment_score);
+        $this->assertSame('medium',$quote->recommended_tier);
+        $this->assertSame('basic',$quote->selected_tier);
+        $this->assertGreaterThan(0,(float)$quote->support_amount);
+        $this->assertSame(495.0,(float)$quote->membership_amount);
+        $this->assertDatabaseHas('leads',['email'=>'rami@example.test','status'=>'proposal']);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'service']);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support']);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'membership']);
+        $this->get('/quote_view?id='.$quote->id.'&lang=ar')->assertOk()->assertSee('ملخص العرض')->assertSee($items[0]->description_ar);
+        $this->get('/quote/share/'.$quote->share_token.'?lang=he')->assertOk()->assertSee('סיכום הצעה')->assertSee($items[0]->description_he);
     }
 
     public function test_super_admin_can_edit_role_details_and_permissions(): void

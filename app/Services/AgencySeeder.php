@@ -10,6 +10,7 @@ final class AgencySeeder
     {
         if ((int) $db->scalar('SELECT COUNT(*) FROM roles') > 0) {
             self::ensureDemoExtensions($db);
+            self::ensureQuoteStudio($db);
             return;
         }
 
@@ -296,6 +297,89 @@ final class AgencySeeder
             $db->insert('notifications', ['user_id'=>$adminId,'type'=>'visit.upcoming','title'=>'Content visit tomorrow','body'=>'Cedar & Stone portfolio shoot is scheduled for tomorrow.','link'=>'visits','created_at'=>$now]);
         });
         self::ensureDemoExtensions($db);
+        self::ensureQuoteStudio($db);
+    }
+
+    private static function ensureQuoteStudio(Database $db): void
+    {
+        $now = now()->toDateTimeString();
+        $profiles = [
+            'Website Design' => ['تصميم المواقع','עיצוב אתרים','UX/UI design, responsive page layouts, and a conversion-focused visual system.','تصميم UX/UI وتخطيطات متجاوبة ونظام بصري يركز على التحويل.','עיצוב UX/UI, פריסות רספונסיביות ומערכת חזותית ממוקדת המרה.'],
+            'Website Development' => ['تطوير المواقع','פיתוח אתרים','Responsive front-end and CMS development, forms, analytics, launch, and quality assurance.','تطوير واجهة متجاوبة ونظام إدارة محتوى ونماذج وتحليلات وإطلاق واختبار جودة.','פיתוח רספונסיבי ו-CMS, טפסים, אנליטיקה, השקה ובקרת איכות.'],
+            'Website Maintenance' => ['صيانة المواقع','תחזוקת אתרים','Monthly updates, backups, monitoring, and minor content changes.','تحديثات ونسخ احتياطي ومراقبة وتعديلات محتوى بسيطة شهرياً.','עדכונים, גיבויים, ניטור ושינויי תוכן קטנים מדי חודש.'],
+            'E-commerce Development' => ['تطوير التجارة الإلكترونية','פיתוח מסחר אלקטרוני','Storefront, product catalogue, checkout, payment setup, and order workflow configuration.','واجهة متجر وكتالوج منتجات ودفع وإعداد بوابة الدفع وسير عمل الطلبات.','חנות, קטלוג מוצרים, תשלום, סליקה והגדרת תהליך הזמנות.'],
+            'Branding' => ['الهوية التجارية','מיתוג','Brand strategy, visual direction, colour, typography, and core identity guidelines.','استراتيجية العلامة والاتجاه البصري والألوان والخطوط وإرشادات الهوية.','אסטרטגיית מותג, כיוון חזותי, צבע, טיפוגרפיה והנחיות זהות.'],
+            'Logo Design' => ['تصميم الشعار','עיצוב לוגו','Primary logo concept, refinement rounds, and production-ready file formats.','مفهوم شعار أساسي وجولات تحسين وملفات نهائية جاهزة للاستخدام.','קונספט לוגו מרכזי, סבבי ליטוש וקבצים מוכנים לשימוש.'],
+            'Photography' => ['التصوير الفوتوغرافي','צילום','Professional on-location photography, colour correction, and selected edited images.','تصوير احترافي في الموقع وتصحيح ألوان وتسليم صور مختارة ومعدلة.','צילום מקצועי במקום, תיקוני צבע ומסירת תמונות ערוכות נבחרות.'],
+            'Videography' => ['تصوير الفيديو','וידאו','Professional capture, edit, sound polish, and social-ready video exports.','تصوير احترافي ومونتاج وتحسين صوت ونسخ جاهزة للمنصات الاجتماعية.','צילום מקצועי, עריכה, שיפור סאונד ויצוא מותאם לרשתות.'],
+            'Social Media Management' => ['إدارة وسائل التواصل','ניהול רשתות חברתיות','Monthly publishing calendar, posting, community monitoring, and performance reporting.','تقويم نشر شهري وجدولة ومتابعة المجتمع وتقارير أداء.','לוח פרסום חודשי, העלאה, ניטור קהילה ודוחות ביצועים.'],
+            'Social Media Strategy' => ['استراتيجية التواصل الاجتماعي','אסטרטגיית סושיאל','Audience, channel, content-pillar, cadence, and measurement plan.','خطة الجمهور والقنوات ومحاور المحتوى والوتيرة والقياس.','תוכנית קהל, ערוצים, עמודי תוכן, תדירות ומדידה.'],
+            'Content Creation' => ['إنشاء المحتوى','יצירת תוכן','Branded copy and creative assets sized for the selected monthly channels.','نصوص وأصول إبداعية بهوية العلامة ومقاسات مناسبة للقنوات المختارة.','קופי ונכסים יצירתיים ממותגים ומותאמים לערוצים שנבחרו.'],
+            'SEO' => ['تحسين محركات البحث','קידום אורגני','Technical and on-page SEO, keyword mapping, local optimization, and reporting.','تحسين تقني وداخلي وكلمات مفتاحية وتحسين محلي وتقارير.','SEO טכני ותוכן, מיפוי מילות מפתח, קידום מקומי ודוחות.'],
+            'Google Business Management' => ['إدارة ملف Google للأعمال','ניהול Google Business','Profile optimization, updates, photo publishing, and insight monitoring.','تحسين الملف ونشر التحديثات والصور ومتابعة الإحصاءات.','אופטימיזציה לפרופיל, עדכונים, תמונות וניטור נתונים.'],
+            'Google Review Management' => ['إدارة تقييمات Google','ניהול ביקורות Google','Review-request workflow, response guidance, and reputation monitoring.','سير طلب التقييمات وإرشادات الرد ومراقبة السمعة.','תהליך בקשת ביקורות, הנחיות תגובה וניטור מוניטין.'],
+            'Business Strategy' => ['استراتيجية الأعمال','אסטרטגיה עסקית','Focused advisory sessions, priorities, road map, and documented next actions.','جلسات استشارية وأولويات وخارطة طريق وخطوات تالية موثقة.','פגישות ייעוץ, סדרי עדיפויות, מפת דרכים וצעדים מתועדים.'],
+            'Marketing Strategy' => ['استراتيجية التسويق','אסטרטגיית שיווק','Market positioning, campaign plan, channel mix, budget direction, and KPIs.','تموضع السوق وخطة حملات ومزيج قنوات وتوجيه ميزانية ومؤشرات أداء.','מיצוב שוק, תוכנית קמפיינים, תמהיל ערוצים, תקציב ומדדים.'],
+            'Business Development' => ['تطوير الأعمال','פיתוח עסקי','Pipeline planning, outreach structure, partnership targets, and sales enablement.','تخطيط مسار المبيعات وهيكل التواصل وأهداف الشراكات وتمكين المبيعات.','תכנון צינור מכירות, פנייה יזומה, יעדי שותפים ותמיכה במכירות.'],
+            'Consulting' => ['الاستشارات','ייעוץ','Flexible expert advisory billed by the hour with written recommendations.','استشارات خبراء مرنة بالساعة مع توصيات مكتوبة.','ייעוץ מומחים גמיש לפי שעה עם המלצות כתובות.'],
+        ];
+
+        $sort = 10;
+        foreach ($profiles as $name => [$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe]) {
+            $db->execute('UPDATE services SET name_ar=?,name_he=?,description=?,description_ar=?,description_he=?,quote_enabled=1,quote_sort=? WHERE name=?', [$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$sort,$name]);
+            $sort += 10;
+        }
+
+        $tiers = [
+            'basic' => [
+                'Basic Setup','الإعداد الأساسي','חבילת בסיס','A focused foundation for a small or new business.','أساس عملي لشركة صغيرة أو جديدة.','בסיס ממוקד לעסק קטן או חדש.',
+                ['Logo Design'=>900,'Website Design'=>2200,'Website Development'=>2800,'Google Business Management'=>450,'Social Media Strategy'=>650],
+            ],
+            'medium' => [
+                'Medium Setup','الإعداد المتوسط','חבילת ביניים','A growth-ready brand, website, search, and content system.','نظام علامة وموقع وبحث ومحتوى جاهز للنمو.','מערכת מותג, אתר, חיפוש ותוכן שמוכנה לצמיחה.',
+                ['Branding'=>2800,'Logo Design'=>1100,'Website Design'=>3200,'Website Development'=>5200,'SEO'=>1200,'Google Business Management'=>550,'Social Media Strategy'=>950,'Content Creation'=>1400,'Photography'=>750],
+            ],
+            'pro' => [
+                'Pro Setup','الإعداد الاحترافي','חבילת פרו','An advanced multi-channel system for scale, automation, and sustained growth.','نظام متقدم متعدد القنوات للتوسع والأتمتة والنمو المستمر.','מערכת רב-ערוצית מתקדמת לצמיחה, אוטומציה והתרחבות.',
+                ['Branding'=>3495,'Logo Design'=>1495,'Website Design'=>4200,'Website Development'=>6995,'E-commerce Development'=>8995,'SEO'=>1800,'Google Business Management'=>750,'Google Review Management'=>595,'Social Media Strategy'=>1250,'Content Creation'=>2200,'Photography'=>950,'Videography'=>1450,'Marketing Strategy'=>2495,'Business Strategy'=>1350,'Business Development'=>1995],
+            ],
+        ];
+
+        $order = 1;
+        foreach ($tiers as $tier => [$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$items]) {
+            $package = $db->first("SELECT id FROM packages WHERE package_type='quote_setup' AND tier=? LIMIT 1", [$tier]);
+            if ($package) {
+                $packageId = (int)$package['id'];
+                $db->update('packages', $packageId, ['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'featured'=>$tier==='medium'?1:0,'active'=>1,'display_order'=>$order,'updated_at'=>$now]);
+            } else {
+                $packageId = $db->insert('packages', ['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'package_type'=>'quote_setup','tier'=>$tier,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'featured'=>$tier==='medium'?1:0,'active'=>1,'display_order'=>$order,'created_at'=>$now,'updated_at'=>$now]);
+            }
+
+            $basePrice = array_sum($items);
+            $pricing = $db->first('SELECT id FROM package_pricing WHERE package_id=? AND effective_to IS NULL ORDER BY id DESC LIMIT 1', [$packageId]);
+            if ($pricing) {
+                $db->update('package_pricing', (int)$pricing['id'], ['base_price'=>$basePrice,'minimum_price'=>$basePrice,'tax_percent'=>13]);
+            } else {
+                $db->insert('package_pricing', ['package_id'=>$packageId,'business_size_id'=>null,'base_price'=>$basePrice,'monthly_fee'=>0,'setup_fee'=>0,'minimum_price'=>$basePrice,'maximum_price'=>null,'discount_percent'=>0,'tax_percent'=>13,'deposit_percent'=>30,'effective_from'=>date('Y-m-d'),'effective_to'=>null]);
+            }
+
+            $db->execute('DELETE FROM package_items WHERE package_id=?', [$packageId]);
+            $itemOrder = 1;
+            foreach ($items as $serviceName => $price) {
+                $service = $db->first('SELECT id,description,description_ar,description_he,cost_estimate,estimated_hours FROM services WHERE name=?', [$serviceName]);
+                if (! $service) { continue; }
+                $prefix = ucfirst($tier).' scope: ';
+                $db->insert('package_items', [
+                    'package_id'=>$packageId,'service_id'=>$service['id'],'quantity'=>1,'unit_price'=>$price,
+                    'scope_note'=>$prefix.$service['description'],'description'=>$prefix.$service['description'],
+                    'description_ar'=>($tier==='basic'?'النطاق الأساسي: ':($tier==='medium'?'النطاق المتوسط: ':'النطاق الاحترافي: ')).$service['description_ar'],
+                    'description_he'=>($tier==='basic'?'היקף בסיסי: ':($tier==='medium'?'היקף ביניים: ':'היקף מקצועי: ')).$service['description_he'],
+                    'included'=>1,'sort_order'=>$itemOrder,'estimated_cost'=>$service['cost_estimate'],'estimated_hours'=>$service['estimated_hours'],
+                ]);
+                $itemOrder++;
+            }
+            $order++;
+        }
     }
 
     private static function ensureDemoExtensions(Database $db): void

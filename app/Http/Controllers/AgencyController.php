@@ -7,6 +7,7 @@ namespace App\Http\Controllers;
 use App\Services\AgencyService;
 use App\Services\Auth;
 use App\Services\Database;
+use App\Services\QuoteStudioService;
 use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Throwable;
@@ -16,12 +17,14 @@ final class AgencyController extends Controller
     private Database $db;
     private Auth $auth;
     private AgencyService $agency;
+    private QuoteStudioService $quotes;
 
     public function __construct(Database $db, Auth $auth)
     {
         $this->db = $db;
         $this->auth = $auth;
         $this->agency = new AgencyService($db, $auth);
+        $this->quotes = new QuoteStudioService($db, $auth);
     }
 
     public function show(Request $request, string $module = 'dashboard'): mixed
@@ -32,6 +35,7 @@ final class AgencyController extends Controller
             'packages'=>'packages.access','services'=>'services.access','proposals'=>'proposals.access','projects'=>'projects.access','tasks'=>'tasks.access',
             'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','calendar'=>'calendar.access','invoices'=>'invoices.access','team'=>'team.access','time'=>'time.access',
             'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access',
+            'quote_studio'=>'proposals.access','saved_quotes'=>'proposals.access','quote_view'=>'proposals.access','quote_settings'=>'settings.access',
         ];
 
         if (! isset($permissionMap[$route])) {
@@ -74,7 +78,20 @@ final class AgencyController extends Controller
             'settings' => $this->laravelPage('settings', ['title'=>'Settings','options'=>$options,'services'=>$this->agency->services(),'stages'=>$this->agency->pipeline(),'roles'=>$this->agency->rolesWithPermissions(),'permissions'=>$this->agency->permissions(),'systemUsers'=>$this->agency->systemUsersWithAccess(),'navigationItems'=>$this->agency->navigationConfiguration()], $route),
             'audit' => $this->laravelPage('audit', ['title'=>'Audit Log','rows'=>$this->agency->auditLogs()], $route),
             'search' => $this->laravelPage('search', ['title'=>'Search','query'=>trim((string) $request->query('q', '')),'results'=>$this->agency->search(trim((string) $request->query('q', '')))], $route),
+            'quote_studio' => $this->laravelPage('quote-studio', ['title'=>'New Quote','quoteData'=>$this->quotes->builderData((int)$request->query('id',0))], $route),
+            'saved_quotes' => $this->laravelPage('saved-quotes', ['title'=>'Saved Quotes','quotes'=>$this->quotes->savedQuotes($request->query()),'filters'=>$request->query()], $route),
+            'quote_view' => ($quote=$this->quotes->quote((int)$request->query('id',0)))
+                ? $this->laravelPage('quote-view', ['title'=>$quote['proposal_number'],'quote'=>$quote,'company'=>config('quote_studio.company'),'locales'=>config('quote_studio.locales')], $route)
+                : $this->laravelPage('error',['title'=>'Quote not found','message'=>'The requested quote does not exist.'],$route,404),
+            'quote_settings' => $this->laravelPage('quote-settings', ['title'=>'Quote Settings','quoteSettings'=>$this->quotes->settingsData()], $route),
         };
+    }
+
+    public function publicQuote(Request $request, string $token): mixed
+    {
+        $quote=$this->quotes->quoteByToken($token);
+        if(!$quote){abort(404);}
+        return response()->view('agency.quote-public',['quote'=>$quote,'company'=>config('quote_studio.company'),'locales'=>config('quote_studio.locales'),'publicMode'=>true]);
     }
 
     public function action(Request $request, string $module = 'dashboard'): mixed
@@ -132,6 +149,14 @@ final class AgencyController extends Controller
                 'update_user_access'=>['settings.access', fn()=>$this->agency->updateUserAccess($input), 'settings', 'User role and access overrides updated.'],
                 'create_pipeline_stage'=>['settings.access', fn()=>$this->agency->createPipelineStage($input), 'settings', 'Pipeline stage created.'],
                 'update_pipeline_stage'=>['settings.access', fn()=>$this->agency->updatePipelineStage($input), 'settings', 'Pipeline stage updated and probabilities synchronized.'],
+                'save_quote'=>['proposals.access', fn()=>$this->quotes->save($input), 'quote_view', 'Quote saved. You can now review, print, or send it.'],
+                'duplicate_quote'=>['proposals.access', fn()=>$this->quotes->duplicate((int)$input['proposal_id']), 'quote_studio', 'A new editable quote revision was created.'],
+                'record_quote_delivery'=>['proposals.access', fn()=>$this->quotes->recordDelivery($input), 'quote_view', 'Quote delivery was recorded. You can send the prepared email draft now.'],
+                'onboard_quote'=>['proposals.access', fn()=>$this->quotes->onboard((int)$input['proposal_id']), 'client', 'Quote accepted and the client was onboarded.'],
+                'save_quote_service'=>['settings.access', fn()=>$this->quotes->saveService($input), 'quote_settings', 'Service catalog updated.'],
+                'save_quote_package'=>['settings.access', fn()=>$this->quotes->savePackage($input), 'quote_settings', 'Package name and description updated.'],
+                'save_quote_package_item'=>['settings.access', fn()=>$this->quotes->savePackageItem($input), 'quote_settings', 'Package item price and description updated.'],
+                'save_quote_plan'=>['settings.access', fn()=>$this->quotes->savePlan($input), 'quote_settings', 'Support or membership plan updated.'],
             ];
             if (! isset($handlers[$action])) { throw new InvalidArgumentException('Unsupported request.'); }
             [$permission,$handler,$successRoute,$message] = $handlers[$action];
@@ -142,6 +167,8 @@ final class AgencyController extends Controller
             if (in_array($action, ['update_lead','add_lead_followup','update_lead_followup'], true)) { $parameters['id'] = (int) $input['lead_id']; }
             if ($action === 'convert_lead' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
             if ($action === 'move_opportunity' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
+            if (in_array($action,['save_quote','duplicate_quote','record_quote_delivery'],true) && is_int($result)) { $parameters['id'] = $action==='record_quote_delivery' ? (int)$input['proposal_id'] : $result; }
+            if ($action === 'onboard_quote' && is_int($result)) { $parameters['id'] = $result; }
             return redirect(agency_url($successRoute, $parameters))->with('success', $message);
         } catch (Throwable $exception) {
             report($exception);
@@ -400,7 +427,7 @@ final class AgencyController extends Controller
 
     private function safeRoute(string $route): string
     {
-        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','team','time','reports','settings','audit'];
+        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_settings'];
         return in_array($route,$allowed,true) ? $route : 'dashboard';
     }
 

@@ -1,0 +1,92 @@
+<?php
+$proposal = $quoteData['proposal'] ?? null;
+$initialLocale = $proposal['locale'] ?? 'en';
+$initialAssessment = $proposal['assessment'] ?? [];
+$initialServiceItems = array_values(array_filter($proposal['items'] ?? [], static fn(array $item): bool => ($item['item_type'] ?? 'service') === 'service'));
+$payload = [
+    'packages'=>$quoteData['packages'],'supportPlans'=>$quoteData['supportPlans'],'memberships'=>$quoteData['memberships'],
+    'clients'=>$quoteData['clients'],'proposal'=>$proposal,'initialItems'=>$initialServiceItems,
+];
+$i18n = [
+    'en'=>['new_quote'=>'New Quote','client'=>'Client','assessment'=>'Assessment','setup_package'=>'Setup Package','support_membership'=>'Support & Membership','review'=>'Review','client_details'=>'Client and business details','assessment_title'=>'Business scope assessment','assessment_help'=>'The answers recommend Basic, Medium, or Pro. You can override the recommendation.','scope_score'=>'Scope score','recommended'=>'Recommended','selected_tier'=>'Selected tier','one_time'=>'One-time setup services','one_time_help'=>'Uncheck services the client does not need. Discounts and custom prices are applied per item.','included'=>'Included','service'=>'Service','list_price'=>'List price','discount'=>'Discount %','custom_price'=>'Custom price','final_price'=>'Final price','technical_support'=>'Technical Support','monthly_membership'=>'Monthly Membership','proposal_review'=>'Proposal review','continue'=>'Continue','back'=>'Back','save_quote'=>'Save quote','setup_subtotal'=>'Setup subtotal','subtotal'=>'Subtotal before tax','tax'=>'HST 13%','grand_total'=>'Grand total','contact_name'=>'Contact name','business_name'=>'Business name','email'=>'Email','phone'=>'Phone','business_stage'=>'Business stage','years_operating'=>'Years operating','website'=>'Website or social link','internal_notes'=>'Internal notes','new_business'=>'New business','existing_business'=>'Existing business','choose_client'=>'Load an existing client','no_existing_client'=>'New prospect','description'=>'What is included','no_membership'=>'No membership','no_support'=>'No support','validity'=>'Quote validity','days'=>'days'],
+    'ar'=>['new_quote'=>'عرض سعر جديد','client'=>'العميل','assessment'=>'التقييم','setup_package'=>'باقة الإعداد','support_membership'=>'الدعم والعضوية','review'=>'المراجعة','client_details'=>'بيانات العميل والشركة','assessment_title'=>'تقييم نطاق العمل','assessment_help'=>'توصي الإجابات بالباقة الأساسية أو المتوسطة أو الاحترافية، ويمكنك تعديل التوصية.','scope_score'=>'نقاط النطاق','recommended'=>'موصى به','selected_tier'=>'الباقة المختارة','one_time'=>'خدمات الإعداد لمرة واحدة','one_time_help'=>'ألغِ اختيار أي خدمة غير مطلوبة. يمكن تطبيق الخصم والسعر المخصص على كل بند.','included'=>'مشمول','service'=>'الخدمة','list_price'=>'سعر القائمة','discount'=>'الخصم %','custom_price'=>'سعر مخصص','final_price'=>'السعر النهائي','technical_support'=>'الدعم الفني','monthly_membership'=>'العضوية الشهرية','proposal_review'=>'مراجعة العرض','continue'=>'متابعة','back'=>'رجوع','save_quote'=>'حفظ العرض','setup_subtotal'=>'مجموع الإعداد','subtotal'=>'المجموع قبل الضريبة','tax'=>'ضريبة HST 13%','grand_total'=>'المجموع الكلي','contact_name'=>'اسم جهة الاتصال','business_name'=>'اسم الشركة','email'=>'البريد الإلكتروني','phone'=>'الهاتف','business_stage'=>'مرحلة الشركة','years_operating'=>'سنوات العمل','website'=>'الموقع أو رابط اجتماعي','internal_notes'=>'ملاحظات داخلية','new_business'=>'شركة جديدة','existing_business'=>'شركة قائمة','choose_client'=>'تحميل عميل موجود','no_existing_client'=>'عميل محتمل جديد','description'=>'ما الذي تتضمنه الخدمة','no_membership'=>'بدون عضوية','no_support'=>'بدون دعم','validity'=>'صلاحية العرض','days'=>'أيام'],
+    'he'=>['new_quote'=>'הצעת מחיר חדשה','client'=>'לקוח','assessment'=>'הערכה','setup_package'=>'חבילת הקמה','support_membership'=>'תמיכה וחברות','review'=>'סקירה','client_details'=>'פרטי הלקוח והעסק','assessment_title'=>'הערכת היקף עסקי','assessment_help'=>'התשובות ממליצות על Basic, Medium או Pro. ניתן לשנות את ההמלצה.','scope_score'=>'ציון היקף','recommended'=>'מומלץ','selected_tier'=>'חבילה נבחרת','one_time'=>'שירותי הקמה חד-פעמיים','one_time_help'=>'בטלו שירותים שהלקוח אינו צריך. ניתן להגדיר הנחה או מחיר מותאם לכל פריט.','included'=>'כלול','service'=>'שירות','list_price'=>'מחיר מחירון','discount'=>'הנחה %','custom_price'=>'מחיר מותאם','final_price'=>'מחיר סופי','technical_support'=>'תמיכה טכנית','monthly_membership'=>'חברות חודשית','proposal_review'=>'סקירת ההצעה','continue'=>'המשך','back'=>'חזרה','save_quote'=>'שמור הצעה','setup_subtotal'=>'סכום הקמה','subtotal'=>'סכום לפני מס','tax'=>'HST 13%','grand_total'=>'סה״כ','contact_name'=>'שם איש קשר','business_name'=>'שם העסק','email'=>'אימייל','phone'=>'טלפון','business_stage'=>'שלב העסק','years_operating'=>'שנות פעילות','website'=>'אתר או קישור חברתי','internal_notes'=>'הערות פנימיות','new_business'=>'עסק חדש','existing_business'=>'עסק קיים','choose_client'=>'טעינת לקוח קיים','no_existing_client'=>'לקוח פוטנציאלי חדש','description'=>'מה כלול','no_membership'=>'ללא חברות','no_support'=>'ללא תמיכה','validity'=>'תוקף ההצעה','days'=>'ימים'],
+];
+?>
+<section class="quote-studio-shell" id="quote-studio" data-locale="<?= e($initialLocale) ?>">
+    <div class="quote-studio-topbar">
+        <div>
+            <div class="quote-kicker">360 QUOTE STUDIO</div>
+            <h1 data-i18n="new_quote"><?= $proposal ? 'Edit '.$proposal['proposal_number'] : 'New Quote' ?></h1>
+            <p>Create a clear, visual proposal and move the relationship from prospect to client.</p>
+        </div>
+        <label class="quote-language"><i class="fal fa-language"></i><select id="quote-locale" aria-label="Proposal language">
+            <?php foreach($quoteData['locales'] as $code=>$locale): ?><option value="<?= e($code) ?>" <?= $initialLocale===$code?'selected':'' ?>><?= e($locale['label']) ?></option><?php endforeach; ?>
+        </select></label>
+    </div>
+
+    <div class="quote-hero">
+        <div><span class="quote-pill"><i class="fal fa-sparkles"></i> 360 QUOTE STUDIO</span><h2>Create a clear, visual proposal</h2><p>Capture the client, assess the scope, configure pricing, and prepare a polished quote in one journey.</p></div>
+        <img src="<?= e(asset('img/360-logo-final-exact.png')) ?>" alt="360 Creative Agency">
+    </div>
+
+    <div class="quote-step-tabs" role="tablist">
+        <?php foreach([['users','client'],['clipboard-check','assessment'],['cube','setup_package'],['shield-check','support_membership'],['file-alt','review']] as $index=>$tab): ?>
+            <button type="button" class="quote-step-tab <?= $index===0?'active':'' ?>" data-step-tab="<?= $index+1 ?>"><i class="fal fa-<?= $tab[0] ?>"></i><span><?= $index+1 ?>. <b data-i18n="<?= $tab[1] ?>"><?= e(ucwords(str_replace('_',' ',$tab[1]))) ?></b></span></button>
+        <?php endforeach; ?>
+    </div>
+
+    <form method="post" action="<?= e(url('quote_studio')) ?>" id="quote-builder-form">
+        @csrf
+        <input type="hidden" name="action" value="save_quote"><input type="hidden" name="proposal_id" value="<?= (int)($proposal['id']??0) ?>">
+        <input type="hidden" name="locale" id="quote-locale-input" value="<?= e($initialLocale) ?>"><input type="hidden" name="assessment_json" id="assessment-json">
+        <input type="hidden" name="items_json" id="items-json"><input type="hidden" name="selected_tier" id="selected-tier" value="<?= e($proposal['selected_tier']??'basic') ?>">
+        <input type="hidden" name="support_plan" id="support-plan-input" value="<?= e($proposal['support_plan']??'none') ?>"><input type="hidden" name="membership_plan" id="membership-plan-input" value="<?= e($proposal['membership_plan']??'none') ?>">
+
+        <div class="quote-step-panel active" data-step="1">
+            <header class="quote-panel-heading"><span class="quote-heading-icon"><i class="fal fa-users"></i></span><div><h3 data-i18n="client_details">Client and business details</h3><p>This record becomes the single source for the prospect, quote, and future client.</p></div></header>
+            <div class="quote-form-grid">
+                <label class="quote-field quote-field-wide"><span data-i18n="choose_client">Load an existing client</span><select name="client_id" id="existing-client"><option value="" data-i18n="no_existing_client">New prospect</option><?php foreach($quoteData['clients'] as $client): ?><option value="<?= (int)$client['id'] ?>" <?= (int)($proposal['client_id']??0)===(int)$client['id']?'selected':'' ?>><?= e($client['business_name'].' — '.$client['contact_name']) ?></option><?php endforeach; ?></select></label>
+                <label class="quote-field"><span data-i18n="contact_name">Contact name</span><input required name="contact_name" value="<?= e($proposal['contact_name']??'') ?>"></label>
+                <label class="quote-field"><span data-i18n="business_name">Business name</span><input required name="business_name" value="<?= e($proposal['business_name']??'') ?>"></label>
+                <label class="quote-field"><span data-i18n="email">Email</span><input required type="email" name="contact_email" value="<?= e($proposal['contact_email']??'') ?>"></label>
+                <label class="quote-field"><span data-i18n="phone">Phone</span><input name="contact_phone" value="<?= e($proposal['contact_phone']??'') ?>"></label>
+                <label class="quote-field"><span data-i18n="business_stage">Business stage</span><select name="business_stage"><option value="new_business" <?= ($proposal['business_stage']??'new_business')==='new_business'?'selected':'' ?> data-i18n="new_business">New business</option><option value="existing_business" <?= ($proposal['business_stage']??'')==='existing_business'?'selected':'' ?> data-i18n="existing_business">Existing business</option></select></label>
+                <label class="quote-field"><span data-i18n="years_operating">Years operating</span><input type="number" min="0" name="years_operating" value="<?= e($proposal['years_operating']??0) ?>"></label>
+                <label class="quote-field"><span data-i18n="website">Website or social link</span><input name="website" value="<?= e($proposal['website']??'') ?>"></label>
+                <label class="quote-field quote-field-wide"><span data-i18n="internal_notes">Internal notes</span><textarea name="internal_notes" rows="4"><?= e($proposal['internal_notes']??'') ?></textarea></label>
+            </div>
+        </div>
+
+        <div class="quote-step-panel" data-step="2">
+            <header class="quote-panel-heading"><span class="quote-heading-icon"><i class="fal fa-clipboard-check"></i></span><div><h3 data-i18n="assessment_title">Business scope assessment</h3><p data-i18n="assessment_help">The answers recommend Basic, Medium, or Pro. You can override the recommendation.</p></div></header>
+            <div class="quote-score-grid"><div><span data-i18n="scope_score">Scope score</span><strong id="scope-score">0 / 20</strong></div><div class="recommended"><span data-i18n="recommended">Recommended</span><strong id="recommended-tier">BASIC</strong></div><div><span data-i18n="selected_tier">Selected tier</span><select id="tier-override"><option value="basic">Basic</option><option value="medium">Medium</option><option value="pro">Pro</option></select></div></div>
+            <div class="assessment-grid">
+                <?php foreach($quoteData['assessment'] as $index=>$question): ?>
+                    <label class="assessment-card"><span class="assessment-number"><?= $index+1 ?></span><strong class="assessment-label" data-en="<?= e($question['label']) ?>" data-ar="<?= e($question['label_ar']) ?>" data-he="<?= e($question['label_he']) ?>"><?= e($question['label']) ?></strong><select class="assessment-answer" data-question="<?= e($question['key']) ?>"><?php foreach($question['options'] as $option): ?><option value="<?= e($option['value']) ?>" data-score="<?= (int)$option['score'] ?>" data-en="<?= e($option['label']) ?>" data-ar="<?= e($option['label_ar']) ?>" data-he="<?= e($option['label_he']) ?>" <?= ($initialAssessment[$question['key']]??'')===$option['value']?'selected':'' ?>><?= e($option['label']) ?></option><?php endforeach; ?></select></label>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <div class="quote-step-panel" data-step="3">
+            <header class="quote-panel-heading"><span class="quote-heading-icon"><i class="fal fa-cube"></i></span><div><h3 data-i18n="one_time">One-time setup services</h3><p data-i18n="one_time_help">Uncheck services the client does not need. Discounts and custom prices are applied per item.</p></div><strong class="quote-running-total"><span data-i18n="setup_subtotal">Setup subtotal</span>: <b id="setup-subtotal">$0.00</b></strong></header>
+            <div class="tier-buttons"><button type="button" data-tier="basic">Basic</button><button type="button" data-tier="medium">Medium</button><button type="button" data-tier="pro">Pro</button></div>
+            <div class="quote-table-wrap"><table class="quote-services-table"><thead><tr><th data-i18n="included">Included</th><th>#</th><th data-i18n="service">Service</th><th data-i18n="list_price">List price</th><th data-i18n="discount">Discount %</th><th data-i18n="custom_price">Custom price</th><th data-i18n="final_price">Final price</th></tr></thead><tbody id="quote-service-rows"></tbody></table></div>
+        </div>
+
+        <div class="quote-step-panel" data-step="4">
+            <div class="quote-plan-columns"><section><header class="quote-panel-heading compact"><span class="quote-heading-icon"><i class="fal fa-shield-check"></i></span><div><h3 data-i18n="technical_support">Technical Support</h3><p>Calculated from the final setup subtotal.</p></div></header><div class="quote-plan-grid" id="support-plan-options"></div></section><section><header class="quote-panel-heading compact"><span class="quote-heading-icon"><i class="fal fa-share-alt"></i></span><div><h3 data-i18n="monthly_membership">Monthly Membership</h3><p>Select an ongoing plan or keep the engagement setup-only.</p></div></header><div class="quote-plan-grid membership" id="membership-plan-options"></div></section></div>
+        </div>
+
+        <div class="quote-step-panel" data-step="5">
+            <header class="quote-panel-heading"><span class="quote-heading-icon"><i class="fal fa-file-alt"></i></span><div><h3 data-i18n="proposal_review">Proposal review</h3><p>Check the complete scope, tax, language, and total before saving.</p></div></header>
+            <div class="quote-review-controls"><label><input type="checkbox" name="tax_enabled" value="1" id="tax-enabled" <?= !isset($proposal)||((float)($proposal['tax']??0)>0)?'checked':'' ?>> <span data-i18n="tax">HST 13%</span></label><label><span data-i18n="validity">Quote validity</span><select name="validity_days" id="validity-days"><?php foreach([7,14,30,60] as $days): ?><option value="<?= $days ?>" <?= (int)($proposal['validity_days']??7)===$days?'selected':'' ?>><?= $days ?> days</option><?php endforeach; ?></select></label></div>
+            <article class="quote-review-card"><div class="quote-review-head"><img src="<?= e(asset('img/360-logo-final-exact.png')) ?>" alt="360 Creative Agency"><div><span>PROPOSAL SUMMARY</span><strong><?= e($proposal['proposal_number']??'New draft') ?></strong></div></div><div class="quote-review-client"><div><small>CLIENT AND BUSINESS DETAILS</small><h4 id="review-business">Business Name</h4><p id="review-contact">Client Name</p></div><div><small>PACKAGE</small><strong id="review-tier">BASIC</strong><p>CAD · Canadian Dollar</p></div></div><div id="review-items"></div><div class="quote-totals"><p><span data-i18n="setup_subtotal">Setup subtotal</span><b id="review-setup">$0.00</b></p><p><span data-i18n="technical_support">Technical Support</span><b id="review-support">$0.00</b></p><p><span data-i18n="monthly_membership">Monthly Membership</span><b id="review-membership">$0.00</b></p><p><span data-i18n="subtotal">Subtotal before tax</span><b id="review-subtotal">$0.00</b></p><p><span data-i18n="tax">HST 13%</span><b id="review-tax">$0.00</b></p><p class="grand"><span data-i18n="grand_total">Grand total</span><b id="review-total">$0.00</b></p></div></article>
+        </div>
+
+        <div class="quote-wizard-actions"><button type="button" class="btn btn-outline-light" id="quote-back"><i class="fal fa-arrow-left mr-1"></i><span data-i18n="back">Back</span></button><button type="button" class="btn btn-primary" id="quote-next"><span data-i18n="continue">Continue</span><i class="fal fa-arrow-right ml-1"></i></button><button type="submit" class="btn btn-primary d-none" id="quote-save"><i class="fal fa-save mr-1"></i><span data-i18n="save_quote">Save quote</span></button></div>
+    </form>
+</section>
+<script type="application/json" id="quote-studio-data"><?= json_encode($payload, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?></script>
+<script type="application/json" id="quote-studio-i18n"><?= json_encode($i18n, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES|JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT) ?></script>
+<script src="<?= e(asset('js/quote-studio.js').'?v='.(file_exists(public_path('assets/js/quote-studio.js'))?filemtime(public_path('assets/js/quote-studio.js')):time())) ?>"></script>
