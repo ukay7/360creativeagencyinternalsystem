@@ -300,7 +300,7 @@ class AgencySystemTest extends TestCase
             'action'=>'save_quote','business_name'=>'Quote Journey Test','contact_name'=>'Rami Test','contact_email'=>'rami@example.test',
             'business_stage'=>'existing_business','years_operating'=>4,'locale'=>'ar','assessment_json'=>json_encode($answers),
             'items_json'=>json_encode($payload),'selected_tier'=>'basic','support_plan'=>'3_months','membership_plan'=>'starter',
-            'tax_enabled'=>1,'tax_percent'=>13,'validity_days'=>14,
+            'membership_term'=>3,'tax_enabled'=>1,'tax_percent'=>13,'validity_days'=>14,
         ]);
 
         $quote=DB::table('proposals')->where('business_name','Quote Journey Test')->first();
@@ -310,7 +310,9 @@ class AgencySystemTest extends TestCase
         $this->assertSame('medium',$quote->recommended_tier);
         $this->assertSame('basic',$quote->selected_tier);
         $this->assertGreaterThan(0,(float)$quote->support_amount);
-        $this->assertSame(495.0,(float)$quote->membership_amount);
+        $this->assertSame(995.0,(float)$quote->membership_monthly_price);
+        $this->assertSame(3,(int)$quote->membership_duration_months);
+        $this->assertSame(2985.0,(float)$quote->membership_amount);
         $this->assertDatabaseHas('leads',['email'=>'rami@example.test','status'=>'proposal']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'service']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support']);
@@ -332,12 +334,43 @@ class AgencySystemTest extends TestCase
             ->assertOk()
             ->assertSee('<html lang="he" dir="rtl">', false)
             ->assertSee('8 חודשים')
-            ->assertSee('סושיאל בסיסי')
+            ->assertSee('סושיאל Growth')
+            ->assertSee('How scoring works')
+            ->assertSee('Edit package scopes')
             ->assertSee('quote-scope-modal')
             ->assertSee('existing-relationship');
 
         $this->assertDatabaseHas('quote_support_plans', ['code'=>'8_months','duration_months'=>8]);
-        $this->assertDatabaseHas('quote_memberships', ['code'=>'growth','name'=>'Social Media Essentials']);
+        $this->assertDatabaseHas('quote_memberships', ['code'=>'growth','name'=>'Social Media Growth']);
+        $this->assertDatabaseHas('quote_memberships', ['code'=>'custom','name'=>'Custom social media plan']);
+    }
+
+    public function test_quote_studio_saves_custom_support_and_custom_membership_term(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $package=DB::table('packages')->where('package_type','quote_setup')->where('tier','pro')->first();
+        $item=DB::table('package_items')->where('package_id',$package->id)->orderBy('sort_order')->first();
+        $answers=[];
+        foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][2]['value'];}
+
+        $response=$this->post('/quote_studio',[
+            'action'=>'save_quote','business_name'=>'Custom Commercial Terms','contact_name'=>'Osama Test','contact_email'=>'osama@example.test',
+            'locale'=>'en','assessment_json'=>json_encode($answers),'selected_tier'=>'pro',
+            'items_json'=>json_encode([['service_id'=>$item->service_id,'list_price'=>1000,'discount_percent'=>0,'custom_price'=>null,'description'=>$item->description,'description_ar'=>$item->description_ar,'description_he'=>$item->description_he]]),
+            'support_plan'=>'custom','custom_support_amount'=>875.50,'membership_plan'=>'custom','custom_membership_name'=>'Osama Social Accelerator',
+            'custom_membership_monthly_price'=>1250,'membership_term'=>18,'tax_percent'=>13,'validity_days'=>7,
+        ]);
+
+        $quote=DB::table('proposals')->where('business_name','Custom Commercial Terms')->first();
+        $response->assertRedirect('/quote_view?id='.$quote->id);
+        $this->assertSame(20,(int)$quote->assessment_score);
+        $this->assertSame(875.5,(float)$quote->support_amount);
+        $this->assertSame('Osama Social Accelerator',$quote->membership_name);
+        $this->assertSame(18,(int)$quote->membership_duration_months);
+        $this->assertSame(1250.0,(float)$quote->membership_monthly_price);
+        $this->assertSame(22500.0,(float)$quote->membership_amount);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'membership','quantity'=>18,'unit_price'=>1250,'total'=>22500]);
+        $this->get('/quote_view?id='.$quote->id)->assertOk()->assertSee('Osama Social Accelerator')->assertSee('$1,250.00/month for 18 months.');
     }
 
     public function test_super_admin_can_edit_role_details_and_permissions(): void

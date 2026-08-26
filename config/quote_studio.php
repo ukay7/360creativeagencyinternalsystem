@@ -16,6 +16,12 @@ return [
     'recommendation' => [
         'basic_max' => 7,
         'medium_max' => 14,
+        'max_score' => 20,
+        'presets' => [
+            'basic' => 0,
+            'medium' => 1,
+            'pro' => 2,
+        ],
     ],
     'assessment' => [
         [

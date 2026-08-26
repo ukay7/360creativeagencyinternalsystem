@@ -113,8 +113,17 @@ final class QuoteStudioService
 
         $support = $this->db->first('SELECT * FROM quote_support_plans WHERE code=? AND active=1', [(string)($input['support_plan'] ?? 'none')]) ?: $this->db->first("SELECT * FROM quote_support_plans WHERE code='none'");
         $membership = $this->db->first('SELECT * FROM quote_memberships WHERE code=? AND active=1', [(string)($input['membership_plan'] ?? 'none')]) ?: $this->db->first("SELECT * FROM quote_memberships WHERE code='none'");
-        $supportAmount = round($setupSubtotal * ((float)$support['rate_percent'] / 100) * (float)$support['multiplier'], 2);
-        $membershipAmount = (float)$membership['monthly_price'];
+        $supportAmount = (string)$support['code'] === 'custom'
+            ? round(max(0, (float)($input['custom_support_amount'] ?? 0)), 2)
+            : round($setupSubtotal * ((float)$support['rate_percent'] / 100) * (float)$support['multiplier'], 2);
+        $membershipDuration = (string)$membership['code'] === 'none' ? 0 : min(60, max(1, (int)($input['membership_term'] ?? 3)));
+        $membershipName = (string)$membership['code'] === 'custom'
+            ? (trim((string)($input['custom_membership_name'] ?? '')) ?: 'Custom social media plan')
+            : (string)$membership['name'];
+        $membershipMonthlyPrice = (string)$membership['code'] === 'custom'
+            ? round(max(0, (float)($input['custom_membership_monthly_price'] ?? 0)), 2)
+            : (float)$membership['monthly_price'];
+        $membershipAmount = round($membershipMonthlyPrice * $membershipDuration, 2);
         $subtotal = round($setupSubtotal + $supportAmount + $membershipAmount, 2);
         $taxPercent = min(100, max(0, (float)($input['tax_percent'] ?? 13)));
         $taxAmount = ! empty($input['tax_enabled']) ? round($subtotal * $taxPercent / 100, 2) : 0.0;
@@ -124,7 +133,7 @@ final class QuoteStudioService
         $existing = $proposalId ? $this->quote($proposalId) : null;
         if ($proposalId && ! $existing) { throw new InvalidArgumentException('The quote could not be found.'); }
 
-        return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$setupSubtotal,$support,$supportAmount,$membership,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
+        return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$setupSubtotal,$support,$supportAmount,$membership,$membershipName,$membershipDuration,$membershipMonthlyPrice,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
             $now = date('c');
             [$leadId,$clientId,$opportunityId] = $this->relationshipIds($input, $existing, $businessName, $contactName, $email, $total, $score);
             $values = [
@@ -135,7 +144,7 @@ final class QuoteStudioService
                 'years_operating'=>max(0, (int)($input['years_operating'] ?? 0)),'summary'=>trim((string)($input['summary'] ?? '')) ?: null,
                 'internal_notes'=>trim((string)($input['internal_notes'] ?? '')) ?: null,'assessment_data'=>json_encode($assessment, JSON_UNESCAPED_UNICODE),
                 'assessment_score'=>$score,'recommended_tier'=>$recommendedTier,'selected_tier'=>$selectedTier,'support_plan'=>$support['code'],'support_amount'=>$supportAmount,
-                'membership_plan'=>$membership['code'],'membership_amount'=>$membershipAmount,'currency'=>'CAD','subtotal'=>$subtotal,'discount'=>max(0, array_sum(array_map(fn(array $row): float => max(0, (float)$row['unit_price'] - (float)$row['total']), $normalizedItems))),
+                'membership_plan'=>$membership['code'],'membership_name'=>$membershipDuration ? $membershipName : null,'membership_duration_months'=>$membershipDuration,'membership_monthly_price'=>$membershipMonthlyPrice,'membership_amount'=>$membershipAmount,'currency'=>'CAD','subtotal'=>$subtotal,'discount'=>max(0, array_sum(array_map(fn(array $row): float => max(0, (float)$row['unit_price'] - (float)$row['total']), $normalizedItems))),
                 'tax_percent'=>$taxPercent,'tax'=>$taxAmount,'total'=>$total,'deposit'=>0,'valid_until'=>date('Y-m-d', strtotime('+'.$validityDays.' days')),
                 'validity_days'=>$validityDays,'updated_at'=>$now,
             ];
@@ -151,7 +160,11 @@ final class QuoteStudioService
                 $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'support','title'=>$support['name'],'title_ar'=>$support['name_ar'],'title_he'=>$support['name_he'],'description'=>$support['description'],'description_ar'=>$support['description_ar'],'description_he'=>$support['description_he'],'category'=>'Technical Support','quantity'=>1,'unit_price'=>$supportAmount,'discount_percent'=>0,'total'=>$supportAmount,'sort_order'=>900]);
             }
             if ((string)$membership['code'] !== 'none') {
-                $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'membership','title'=>$membership['name'].' membership','title_ar'=>$membership['name_ar'],'title_he'=>$membership['name_he'],'description'=>$membership['description'],'description_ar'=>$membership['description_ar'],'description_he'=>$membership['description_he'],'category'=>'Monthly Membership','quantity'=>1,'unit_price'=>$membershipAmount,'discount_percent'=>0,'total'=>$membershipAmount,'sort_order'=>950]);
+                $formattedMembershipPrice = '$'.number_format($membershipMonthlyPrice, 2);
+                $description = trim((string)$membership['description']).' '.$formattedMembershipPrice.'/month for '.$membershipDuration.' months.';
+                $descriptionAr = trim((string)$membership['description_ar']).' '.$formattedMembershipPrice.' شهرياً لمدة '.$membershipDuration.' أشهر.';
+                $descriptionHe = trim((string)$membership['description_he']).' '.$formattedMembershipPrice.' לחודש למשך '.$membershipDuration.' חודשים.';
+                $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'membership','title'=>$membershipName,'title_ar'=>(string)$membership['code']==='custom'?$membershipName:$membership['name_ar'],'title_he'=>(string)$membership['code']==='custom'?$membershipName:$membership['name_he'],'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'category'=>'Service Membership','quantity'=>$membershipDuration,'unit_price'=>$membershipMonthlyPrice,'discount_percent'=>0,'total'=>$membershipAmount,'sort_order'=>950]);
             }
             $this->audit('quote.saved', 'Quote '.$proposalId.' saved for '.$businessName, 'proposal', $proposalId);
             return $proposalId;

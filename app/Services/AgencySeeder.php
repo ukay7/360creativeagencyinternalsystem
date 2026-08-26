@@ -405,6 +405,7 @@ final class AgencySeeder
             ['6_months','6 months','6 أشهر','6 חודשים','Extended technical support for six months.','دعم فني ممتد لمدة ستة أشهر.','תמיכה טכנית מורחבת לשישה חודשים.',20,2,6,3],
             ['8_months','8 months','8 أشهر','8 חודשים','Continuity support across an eight-month delivery period.','دعم استمراري خلال فترة تنفيذ مدتها ثمانية أشهر.','תמיכת המשכיות לאורך תקופת ביצוע של שמונה חודשים.',18,3,8,4],
             ['12_months','12 months','12 شهراً','12 חודשים','Annual technical support and continuity coverage.','دعم فني سنوي وتغطية استمرارية.','תמיכה טכנית שנתית וכיסוי המשכיות.',18,4,12,5],
+            ['custom','Custom support','دعم مخصص','תמיכה מותאמת','Enter a fixed support amount for this quote.','أدخل مبلغ دعم ثابتاً لهذا العرض.','הזינו סכום תמיכה קבוע להצעה זו.',0,0,0,99],
         ];
         foreach ($supportPlans as [$code,$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$rate,$multiplier,$months,$sort]) {
             $values=['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'rate_percent'=>$rate,'multiplier'=>$multiplier,'duration_months'=>$months,'active'=>1,'sort_order'=>$sort];
@@ -414,17 +415,17 @@ final class AgencySeeder
 
         $memberships = [
             ['none','No membership','بدون عضوية','ללא חברות','Setup-only engagement.','تنفيذ الإعداد فقط.','התקשרות להקמה בלבד.',0,0,1],
-            ['starter','Website Care','العناية بالموقع','תחזוקת אתר','Updates, backups, uptime monitoring, security checks, and up to two minor content changes monthly.','تحديثات ونسخ احتياطي ومراقبة وتشخيص أمان وتعديلان بسيطان للمحتوى شهرياً.','עדכונים, גיבויים, ניטור, בדיקות אבטחה ועד שני שינויי תוכן קטנים בחודש.',495,0,2],
-            ['growth','Social Media Essentials','أساسيات التواصل الاجتماعي','סושיאל בסיסי','Two platforms, 12 monthly posts, scheduling, community monitoring, and a performance report.','منصتان و12 منشوراً شهرياً وجدولة ومتابعة المجتمع وتقرير أداء.','שתי פלטפורמות, 12 פוסטים בחודש, תזמון, ניטור קהילה ודוח ביצועים.',1495,1,3],
-            ['premium','Social Media Growth','نمو التواصل الاجتماعي','צמיחת סושיאל','Three platforms, 20 monthly posts, short-form video, community management, and monthly optimization.','ثلاث منصات و20 منشوراً شهرياً وفيديو قصير وإدارة مجتمع وتحسين شهري.','שלוש פלטפורמות, 20 פוסטים בחודש, וידאו קצר, ניהול קהילה ואופטימיזציה חודשית.',2495,0,4],
-            ['seo_reputation','SEO & Reputation','تحسين البحث والسمعة','SEO ומוניטין','Local SEO, keyword tracking, Google Business updates, review monitoring, and monthly reporting.','تحسين محلي وتتبع كلمات وتحديث ملف Google ومتابعة التقييمات وتقارير شهرية.','SEO מקומי, מעקב מילות מפתח, עדכוני Google Business, ניטור ביקורות ודוח חודשי.',995,0,5],
-            ['content_creation','Content Creation','إنشاء المحتوى','יצירת תוכן','A monthly bank of branded copy, graphics, and platform-ready creative assets.','حزمة شهرية من النصوص والتصاميم والأصول الإبداعية الجاهزة للنشر.','בנק חודשי של קופי, גרפיקה ונכסים יצירתיים מוכנים לפרסום.',1295,0,6],
+            ['starter','Social Media Essential','التواصل الاجتماعي الأساسي','סושיאל Essential','One platform, 8 monthly posts, scheduling, community monitoring, and a monthly report.','منصة واحدة و8 منشورات شهرياً وجدولة ومتابعة المجتمع وتقرير شهري.','פלטפורמה אחת, 8 פוסטים בחודש, תזמון, ניטור קהילה ודוח חודשי.',995,0,2],
+            ['growth','Social Media Growth','نمو التواصل الاجتماعي','סושיאל Growth','Two platforms, 12 monthly posts, short-form content, community management, and optimization.','منصتان و12 منشوراً شهرياً ومحتوى قصير وإدارة مجتمع وتحسين مستمر.','שתי פלטפורמות, 12 פוסטים בחודש, תוכן קצר, ניהול קהילה ואופטימיזציה.',1495,1,3],
+            ['premium','Social Media Pro','التواصل الاجتماعي الاحترافي','סושיאל Pro','Three platforms, 20 monthly posts, video, active community management, campaigns, and strategy reporting.','ثلاث منصات و20 منشوراً شهرياً وفيديو وإدارة مجتمع نشطة وحملات وتقارير استراتيجية.','שלוש פלטפורמות, 20 פוסטים בחודש, וידאו, ניהול קהילה פעיל, קמפיינים ודוחות אסטרטגיים.',2495,0,4],
+            ['custom','Custom social media plan','باقة تواصل اجتماعي مخصصة','תוכנית סושיאל מותאמת','Enter a custom plan name, monthly price, and term for this client.','أدخل اسم الباقة والسعر الشهري والمدة لهذا العميل.','הזינו שם תוכנית, מחיר חודשי ותקופה מותאמים ללקוח.',0,0,99],
         ];
         foreach ($memberships as [$code,$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$price,$featured,$sort]) {
             $values=['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'monthly_price'=>$price,'featured'=>$featured,'active'=>1,'sort_order'=>$sort];
             $existing=$db->first('SELECT id FROM quote_memberships WHERE code=?',[$code]);
             if($existing){$db->update('quote_memberships',(int)$existing['id'],$values);}else{$db->insert('quote_memberships',['code'=>$code]+$values);}
         }
+        $db->execute("UPDATE quote_memberships SET active=0 WHERE code IN ('seo_reputation','content_creation')");
     }
 
     private static function ensureDemoExtensions(Database $db): void
