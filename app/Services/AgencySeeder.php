@@ -405,7 +405,7 @@ final class AgencySeeder
             ['6_months','6 months','6 أشهر','6 חודשים','Extended technical support for six months.','دعم فني ممتد لمدة ستة أشهر.','תמיכה טכנית מורחבת לשישה חודשים.',20,2,6,3],
             ['8_months','8 months','8 أشهر','8 חודשים','Continuity support across an eight-month delivery period.','دعم استمراري خلال فترة تنفيذ مدتها ثمانية أشهر.','תמיכת המשכיות לאורך תקופת ביצוע של שמונה חודשים.',18,3,8,4],
             ['12_months','12 months','12 شهراً','12 חודשים','Annual technical support and continuity coverage.','دعم فني سنوي وتغطية استمرارية.','תמיכה טכנית שנתית וכיסוי המשכיות.',18,4,12,5],
-            ['custom','Custom support','دعم مخصص','תמיכה מותאמת','Enter a fixed support amount for this quote.','أدخل مبلغ دعم ثابتاً لهذا العرض.','הזינו סכום תמיכה קבוע להצעה זו.',0,0,0,99],
+            ['custom','Custom support','دعم مخصص','תמיכה מותאמת','Enter a plan name, duration, and percentage. The amount is calculated from the setup subtotal.','أدخل اسم الخطة والمدة والنسبة، ويتم احتساب المبلغ من مجموع الإعداد.','הזינו שם תוכנית, משך ואחוז. הסכום יחושב מסכום ההקמה.',0,0,0,99],
         ];
         foreach ($supportPlans as [$code,$name,$nameAr,$nameHe,$description,$descriptionAr,$descriptionHe,$rate,$multiplier,$months,$sort]) {
             $values=['name'=>$name,'name_ar'=>$nameAr,'name_he'=>$nameHe,'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'rate_percent'=>$rate,'multiplier'=>$multiplier,'duration_months'=>$months,'active'=>1,'sort_order'=>$sort];

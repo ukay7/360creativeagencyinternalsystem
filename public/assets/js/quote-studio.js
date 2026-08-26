@@ -146,11 +146,13 @@
         var supportHost=document.getElementById('support-plan-options'); supportHost.innerHTML='';
         (data.supportPlans || []).forEach(function(plan){
             var button=document.createElement('button'); button.type='button'; button.className='quote-plan-card'+(plan.code===supportCode?' active':''); button.dataset.support=plan.code;
-            var amount=plan.code==='custom' ? customSupportAmount() : setupAmount*Number(plan.rate_percent||0)/100*Number(plan.multiplier||0);
-            var pricing=plan.code==='custom' ? money(amount) : (Number(plan.rate_percent)>0 ? Number(plan.rate_percent)+'% × '+Number(plan.multiplier)+' = '+money(amount) : dictionary('no_support'));
+            var amount=plan.code==='custom' ? customSupportAmount(setupAmount) : setupAmount*Number(plan.rate_percent||0)/100*Number(plan.multiplier||0);
+            var customCycles=Math.round(customSupportDuration()/3*100)/100;
+            var pricing=plan.code==='custom' ? customSupportRate()+'% × '+customCycles+' = '+money(amount) : (Number(plan.rate_percent)>0 ? Number(plan.rate_percent)+'% × '+Number(plan.multiplier)+' = '+money(amount) : dictionary('no_support'));
             button.innerHTML='<strong>'+esc(localized(plan,'name'))+'</strong><span>'+esc(pricing)+'</span><small>'+esc(localized(plan,'description'))+'</small>'; supportHost.appendChild(button);
         });
         document.getElementById('custom-support-panel').hidden=supportCode!=='custom';
+        document.getElementById('custom-support-total').textContent=money(customSupportAmount(setupAmount));
         var memberHost=document.getElementById('membership-plan-options'); memberHost.innerHTML='';
         (data.memberships || []).forEach(function(plan){
             var button=document.createElement('button'); button.type='button'; button.className='quote-plan-card'+(plan.code===membershipCode?' active':''); button.dataset.membership=plan.code;
@@ -171,14 +173,16 @@
 
     function selectedSupport() { return (data.supportPlans || []).find(function(plan){return plan.code===supportCode;}) || {rate_percent:0,multiplier:0}; }
     function selectedMembership() { return (data.memberships || []).find(function(plan){return plan.code===membershipCode;}) || {monthly_price:0}; }
-    function customSupportAmount() { return Math.max(0,Number(document.getElementById('custom-support-amount').value||0)); }
+    function customSupportRate() { return Math.min(100,Math.max(0,Number(document.getElementById('custom-support-rate').value||0))); }
+    function customSupportDuration() { return Math.min(60,Math.max(1,Number(document.getElementById('custom-support-duration').value||1))); }
+    function customSupportAmount(setup) { return Number(setup||0)*customSupportRate()/100*(customSupportDuration()/3); }
     function customMembershipMonthlyPrice() { return Math.max(0,Number(document.getElementById('custom-membership-price').value||0)); }
     function membershipDurationValue() {
         return membershipTermMode==='custom' ? Math.min(60,Math.max(1,Number(document.getElementById('custom-membership-duration').value||1))) : Number(membershipTermMode||3);
     }
     function totals() {
         var setup=activeItems.reduce(function(sum,item){return sum+Number(item.final_price||0);},0);
-        var support=selectedSupport(); var supportAmount=supportCode==='custom' ? customSupportAmount() : setup*Number(support.rate_percent||0)/100*Number(support.multiplier||0);
+        var support=selectedSupport(); var supportAmount=supportCode==='custom' ? customSupportAmount(setup) : setup*Number(support.rate_percent||0)/100*Number(support.multiplier||0);
         var membership=selectedMembership(); var monthlyPrice=membershipCode==='custom' ? customMembershipMonthlyPrice() : Number(membership.monthly_price||0);
         var membershipAmount=membershipCode==='none' ? 0 : monthlyPrice*membershipDurationValue(); var subtotal=setup+supportAmount+membershipAmount;
         var tax=document.getElementById('tax-enabled').checked?subtotal*0.13:0;
@@ -227,7 +231,7 @@
     document.getElementById('quote-service-rows').addEventListener('input',updatePricing);
     document.getElementById('quote-service-rows').addEventListener('change',updatePricing);
     root.querySelectorAll('.assessment-answer').forEach(function(select){select.addEventListener('change',function(){updateAssessment(true);});});
-    ['custom-support-amount','custom-membership-name','custom-membership-price','custom-membership-duration'].forEach(function(id){document.getElementById(id).addEventListener('input',function(){if(id==='custom-membership-duration')membershipDuration=membershipDurationValue();renderPlans();updateReview();});});
+    ['custom-support-name','custom-support-rate','custom-support-duration','custom-membership-name','custom-membership-price','custom-membership-duration'].forEach(function(id){document.getElementById(id).addEventListener('input',function(){if(id==='custom-membership-duration')membershipDuration=membershipDurationValue();renderPlans();updateReview();});});
     document.getElementById('tax-enabled').addEventListener('change',updateReview);
     document.getElementById('quote-next').addEventListener('click',function(){if(validCurrentStep())showStep(step+1);});
     document.getElementById('quote-back').addEventListener('click',function(){showStep(step-1);});

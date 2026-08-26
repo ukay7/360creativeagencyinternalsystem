@@ -113,9 +113,12 @@ final class QuoteStudioService
 
         $support = $this->db->first('SELECT * FROM quote_support_plans WHERE code=? AND active=1', [(string)($input['support_plan'] ?? 'none')]) ?: $this->db->first("SELECT * FROM quote_support_plans WHERE code='none'");
         $membership = $this->db->first('SELECT * FROM quote_memberships WHERE code=? AND active=1', [(string)($input['membership_plan'] ?? 'none')]) ?: $this->db->first("SELECT * FROM quote_memberships WHERE code='none'");
-        $supportAmount = (string)$support['code'] === 'custom'
-            ? round(max(0, (float)($input['custom_support_amount'] ?? 0)), 2)
-            : round($setupSubtotal * ((float)$support['rate_percent'] / 100) * (float)$support['multiplier'], 2);
+        $customSupport = (string)$support['code'] === 'custom';
+        $supportName = $customSupport ? (trim((string)($input['custom_support_name'] ?? '')) ?: 'Custom support') : (string)$support['name'];
+        $supportDuration = (string)$support['code'] === 'none' ? 0 : ($customSupport ? min(60, max(1, (int)($input['custom_support_duration'] ?? 3))) : (int)$support['duration_months']);
+        $supportRatePercent = $customSupport ? min(100, max(0, (float)($input['custom_support_rate_percent'] ?? 0))) : (float)$support['rate_percent'];
+        $supportMultiplier = $customSupport ? $supportDuration / 3 : (float)$support['multiplier'];
+        $supportAmount = round($setupSubtotal * ($supportRatePercent / 100) * $supportMultiplier, 2);
         $membershipDuration = (string)$membership['code'] === 'none' ? 0 : min(60, max(1, (int)($input['membership_term'] ?? 3)));
         $membershipName = (string)$membership['code'] === 'custom'
             ? (trim((string)($input['custom_membership_name'] ?? '')) ?: 'Custom social media plan')
@@ -133,7 +136,7 @@ final class QuoteStudioService
         $existing = $proposalId ? $this->quote($proposalId) : null;
         if ($proposalId && ! $existing) { throw new InvalidArgumentException('The quote could not be found.'); }
 
-        return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$setupSubtotal,$support,$supportAmount,$membership,$membershipName,$membershipDuration,$membershipMonthlyPrice,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
+        return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$setupSubtotal,$support,$customSupport,$supportName,$supportDuration,$supportRatePercent,$supportAmount,$membership,$membershipName,$membershipDuration,$membershipMonthlyPrice,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
             $now = date('c');
             [$leadId,$clientId,$opportunityId] = $this->relationshipIds($input, $existing, $businessName, $contactName, $email, $total, $score);
             $values = [
@@ -143,7 +146,7 @@ final class QuoteStudioService
                 'business_stage'=>in_array(($input['business_stage'] ?? ''), ['new_business','existing_business'], true) ? $input['business_stage'] : null,
                 'years_operating'=>max(0, (int)($input['years_operating'] ?? 0)),'summary'=>trim((string)($input['summary'] ?? '')) ?: null,
                 'internal_notes'=>trim((string)($input['internal_notes'] ?? '')) ?: null,'assessment_data'=>json_encode($assessment, JSON_UNESCAPED_UNICODE),
-                'assessment_score'=>$score,'recommended_tier'=>$recommendedTier,'selected_tier'=>$selectedTier,'support_plan'=>$support['code'],'support_amount'=>$supportAmount,
+                'assessment_score'=>$score,'recommended_tier'=>$recommendedTier,'selected_tier'=>$selectedTier,'support_plan'=>$support['code'],'support_name'=>$supportDuration?$supportName:null,'support_duration_months'=>$supportDuration,'support_rate_percent'=>$supportRatePercent,'support_amount'=>$supportAmount,
                 'membership_plan'=>$membership['code'],'membership_name'=>$membershipDuration ? $membershipName : null,'membership_duration_months'=>$membershipDuration,'membership_monthly_price'=>$membershipMonthlyPrice,'membership_amount'=>$membershipAmount,'currency'=>'CAD','subtotal'=>$subtotal,'discount'=>max(0, array_sum(array_map(fn(array $row): float => max(0, (float)$row['unit_price'] - (float)$row['total']), $normalizedItems))),
                 'tax_percent'=>$taxPercent,'tax'=>$taxAmount,'total'=>$total,'deposit'=>0,'valid_until'=>date('Y-m-d', strtotime('+'.$validityDays.' days')),
                 'validity_days'=>$validityDays,'updated_at'=>$now,
@@ -157,7 +160,11 @@ final class QuoteStudioService
             }
             foreach ($normalizedItems as $row) { $this->db->insert('proposal_items', ['proposal_id'=>$proposalId] + $row); }
             if ((string)$support['code'] !== 'none') {
-                $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'support','title'=>$support['name'],'title_ar'=>$support['name_ar'],'title_he'=>$support['name_he'],'description'=>$support['description'],'description_ar'=>$support['description_ar'],'description_he'=>$support['description_he'],'category'=>'Technical Support','quantity'=>1,'unit_price'=>$supportAmount,'discount_percent'=>0,'total'=>$supportAmount,'sort_order'=>900]);
+                $rateLabel = rtrim(rtrim(number_format($supportRatePercent, 2), '0'), '.');
+                $description = $customSupport ? 'Technical support for '.$supportDuration.' months at '.$rateLabel.'% of the setup subtotal per 3 months.' : (string)$support['description'];
+                $descriptionAr = $customSupport ? 'دعم فني لمدة '.$supportDuration.' أشهر بنسبة '.$rateLabel.'% من مجموع الإعداد لكل 3 أشهر.' : (string)$support['description_ar'];
+                $descriptionHe = $customSupport ? 'תמיכה טכנית למשך '.$supportDuration.' חודשים בשיעור '.$rateLabel.'% מסכום ההקמה לכל 3 חודשים.' : (string)$support['description_he'];
+                $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'support','title'=>$supportName,'title_ar'=>$customSupport?$supportName:$support['name_ar'],'title_he'=>$customSupport?$supportName:$support['name_he'],'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'category'=>'Technical Support','quantity'=>1,'unit_price'=>$supportAmount,'discount_percent'=>0,'total'=>$supportAmount,'sort_order'=>900]);
             }
             if ((string)$membership['code'] !== 'none') {
                 $formattedMembershipPrice = '$'.number_format($membershipMonthlyPrice, 2);

@@ -357,20 +357,25 @@ class AgencySystemTest extends TestCase
             'action'=>'save_quote','business_name'=>'Custom Commercial Terms','contact_name'=>'Osama Test','contact_email'=>'osama@example.test',
             'locale'=>'en','assessment_json'=>json_encode($answers),'selected_tier'=>'pro',
             'items_json'=>json_encode([['service_id'=>$item->service_id,'list_price'=>1000,'discount_percent'=>0,'custom_price'=>null,'description'=>$item->description,'description_ar'=>$item->description_ar,'description_he'=>$item->description_he]]),
-            'support_plan'=>'custom','custom_support_amount'=>875.50,'membership_plan'=>'custom','custom_membership_name'=>'Osama Social Accelerator',
+            'support_plan'=>'custom','custom_support_name'=>'Priority Care Plus','custom_support_rate_percent'=>17.5,'custom_support_duration'=>6,
+            'membership_plan'=>'custom','custom_membership_name'=>'Osama Social Accelerator',
             'custom_membership_monthly_price'=>1250,'membership_term'=>18,'tax_percent'=>13,'validity_days'=>7,
         ]);
 
         $quote=DB::table('proposals')->where('business_name','Custom Commercial Terms')->first();
         $response->assertRedirect('/quote_view?id='.$quote->id);
         $this->assertSame(20,(int)$quote->assessment_score);
-        $this->assertSame(875.5,(float)$quote->support_amount);
+        $this->assertSame('Priority Care Plus',$quote->support_name);
+        $this->assertSame(6,(int)$quote->support_duration_months);
+        $this->assertSame(17.5,(float)$quote->support_rate_percent);
+        $this->assertSame(350.0,(float)$quote->support_amount);
         $this->assertSame('Osama Social Accelerator',$quote->membership_name);
         $this->assertSame(18,(int)$quote->membership_duration_months);
         $this->assertSame(1250.0,(float)$quote->membership_monthly_price);
         $this->assertSame(22500.0,(float)$quote->membership_amount);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support','title'=>'Priority Care Plus','total'=>350]);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'membership','quantity'=>18,'unit_price'=>1250,'total'=>22500]);
-        $this->get('/quote_view?id='.$quote->id)->assertOk()->assertSee('Osama Social Accelerator')->assertSee('$1,250.00/month for 18 months.');
+        $this->get('/quote_view?id='.$quote->id)->assertOk()->assertSee('Priority Care Plus')->assertSee('17.5% of the setup subtotal per 3 months')->assertSee('Osama Social Accelerator')->assertSee('$1,250.00/month for 18 months.');
     }
 
     public function test_super_admin_can_edit_role_details_and_permissions(): void
