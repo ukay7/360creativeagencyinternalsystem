@@ -79,7 +79,7 @@ final class QuoteStudioService
         }
 
         $locale = in_array(($input['locale'] ?? 'en'), ['en','ar','he'], true) ? (string)$input['locale'] : 'en';
-        $selectedTier = in_array(($input['selected_tier'] ?? 'basic'), ['basic','medium','pro'], true) ? (string)$input['selected_tier'] : 'basic';
+        $selectedTier = substr(trim((string)($input['selected_tier'] ?? 'basic')), 0, 20) ?: 'basic';
         $assessment = $this->decodeJson($input['assessment_json'] ?? '{}', 'assessment');
         $items = $this->decodeJson($input['items_json'] ?? '[]', 'service selection');
         if (! is_array($items) || count($items) === 0) { throw new InvalidArgumentException('Select at least one setup service.'); }
@@ -253,10 +253,33 @@ final class QuoteStudioService
     public function savePackage(array $input): int
     {
         $id=(int)($input['package_id']??0);
-        $package=$this->db->first("SELECT id FROM packages WHERE id=? AND package_type='quote_setup'",[$id]);
-        if(!$package){throw new InvalidArgumentException('Setup package not found.');}
-        $this->db->update('packages',$id,['name'=>trim((string)$input['name']),'name_ar'=>trim((string)($input['name_ar']??''))?:null,'name_he'=>trim((string)($input['name_he']??''))?:null,'description'=>trim((string)($input['description']??''))?:null,'description_ar'=>trim((string)($input['description_ar']??''))?:null,'description_he'=>trim((string)($input['description_he']??''))?:null,'updated_at'=>date('c')]);
+        $name=trim((string)($input['name']??''));
+        if($name===''){throw new InvalidArgumentException('Package name is required.');}
+        $tier=substr(Str::slug(trim((string)($input['tier']??$name)),'_'),0,20);
+        if($tier===''){$tier='package';}
+        if($this->db->scalar('SELECT id FROM packages WHERE package_type=? AND tier=? AND id<>?',['quote_setup',$tier,$id])){throw new InvalidArgumentException('That package code is already in use.');}
+        $values=['name'=>$name,'name_ar'=>trim((string)($input['name_ar']??''))?:null,'name_he'=>trim((string)($input['name_he']??''))?:null,'tier'=>$tier,'description'=>trim((string)($input['description']??''))?:null,'description_ar'=>trim((string)($input['description_ar']??''))?:null,'description_he'=>trim((string)($input['description_he']??''))?:null,'display_order'=>max(1,(int)($input['display_order']??99)),'active'=>!empty($input['active'])?1:0,'updated_at'=>date('c')];
+        if($id){
+            if(!$this->db->scalar("SELECT id FROM packages WHERE id=? AND package_type='quote_setup'",[$id])){throw new InvalidArgumentException('Setup package not found.');}
+            $this->db->update('packages',$id,$values);
+        }else{
+            $values+=['package_type'=>'quote_setup','featured'=>0,'created_at'=>date('c')];
+            $id=$this->db->insert('packages',$values);
+        }
         $this->audit('quote.package_saved','Quote package '.$id.' saved','package',$id);
+        return $id;
+    }
+
+    public function addPackageItem(array $input): int
+    {
+        $packageId=(int)($input['package_id']??0);$serviceId=(int)($input['service_id']??0);
+        if(!$this->db->scalar("SELECT id FROM packages WHERE id=? AND package_type='quote_setup'",[$packageId])){throw new InvalidArgumentException('Setup package not found.');}
+        $service=$this->db->first('SELECT id,description,description_ar,description_he,default_price,cost_estimate,estimated_hours FROM services WHERE id=? AND active=1 AND quote_enabled=1',[$serviceId]);
+        if(!$service){throw new InvalidArgumentException('Select an active Quote Studio service.');}
+        if($this->db->scalar('SELECT id FROM package_items WHERE package_id=? AND service_id=?',[$packageId,$serviceId])){throw new InvalidArgumentException('That service is already in this package.');}
+        $description=trim((string)($input['description']??''))?:$service['description'];
+        $id=$this->db->insert('package_items',['package_id'=>$packageId,'service_id'=>$serviceId,'quantity'=>1,'unit_price'=>max(0,(float)($input['unit_price']??$service['default_price'])),'scope_note'=>$description,'description'=>$description,'description_ar'=>trim((string)($input['description_ar']??''))?:$service['description_ar'],'description_he'=>trim((string)($input['description_he']??''))?:$service['description_he'],'included'=>!empty($input['included'])?1:0,'sort_order'=>max(0,(int)($input['sort_order']??99)),'estimated_cost'=>$service['cost_estimate'],'estimated_hours'=>$service['estimated_hours']]);
+        $this->audit('quote.package_item_added','Service '.$serviceId.' added to package '.$packageId,'package_item',$id);
         return $id;
     }
 
@@ -266,6 +289,14 @@ final class QuoteStudioService
         if(!$this->db->scalar('SELECT id FROM package_items WHERE id=?',[$id])){throw new InvalidArgumentException('Package item not found.');}
         $this->db->update('package_items',$id,['unit_price'=>max(0,(float)($input['unit_price']??0)),'description'=>trim((string)($input['description']??''))?:null,'description_ar'=>trim((string)($input['description_ar']??''))?:null,'description_he'=>trim((string)($input['description_he']??''))?:null,'included'=>!empty($input['included'])?1:0,'sort_order'=>max(0,(int)($input['sort_order']??0))]);
         $this->audit('quote.package_item_saved','Package item '.$id.' saved','package_item',$id);
+        return $id;
+    }
+
+    public function removePackageItem(int $id): int
+    {
+        if(!$this->db->scalar('SELECT id FROM package_items WHERE id=?',[$id])){throw new InvalidArgumentException('Package item not found.');}
+        $this->db->execute('DELETE FROM package_items WHERE id=?',[$id]);
+        $this->audit('quote.package_item_removed','Package item '.$id.' removed','package_item',$id);
         return $id;
     }
 

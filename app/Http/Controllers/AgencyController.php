@@ -165,8 +165,10 @@ final class AgencyController extends Controller
                 'record_quote_delivery'=>['proposals.access', fn()=>$this->quotes->recordDelivery($input), 'quote_view', 'Quote delivery was recorded. You can send the prepared email draft now.'],
                 'onboard_quote'=>['proposals.access', fn()=>$this->quotes->onboard((int)$input['proposal_id']), 'client', 'Quote accepted and the client was onboarded.'],
                 'save_quote_service'=>['settings.access', fn()=>$this->quotes->saveService($input), 'quote_settings', 'Service catalog updated.'],
-                'save_quote_package'=>['settings.access', fn()=>$this->quotes->savePackage($input), 'quote_settings', 'Package name and description updated.'],
+                'save_quote_package'=>['settings.access', fn()=>$this->quotes->savePackage($input), 'quote_settings', 'Setup package saved.'],
+                'add_quote_package_item'=>['settings.access', fn()=>$this->quotes->addPackageItem($input), 'quote_settings', 'Service added to the setup package.'],
                 'save_quote_package_item'=>['settings.access', fn()=>$this->quotes->savePackageItem($input), 'quote_settings', 'Package item price and description updated.'],
+                'remove_quote_package_item'=>['settings.access', fn()=>$this->quotes->removePackageItem((int)$input['package_item_id']), 'quote_settings', 'Service removed from the setup package.'],
                 'save_quote_plan'=>['settings.access', fn()=>$this->quotes->savePlan($input), 'quote_settings', 'Support or membership plan updated.'],
             ];
             if (! isset($handlers[$action])) { throw new InvalidArgumentException('Unsupported request.'); }

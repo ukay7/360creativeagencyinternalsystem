@@ -119,7 +119,8 @@
     function applyTierPreset(nextTier) {
         tier = nextTier;
         var presets = recommendationRules.presets || {basic:0,medium:1,pro:2};
-        var optionIndex = Number(presets[nextTier] == null ? 0 : presets[nextTier]);
+        if (presets[nextTier] == null) { renderServices(false); return; }
+        var optionIndex = Number(presets[nextTier]);
         root.querySelectorAll('.assessment-answer').forEach(function (select) {
             select.selectedIndex = Math.min(optionIndex, select.options.length - 1);
         });

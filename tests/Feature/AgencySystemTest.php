@@ -378,6 +378,40 @@ class AgencySystemTest extends TestCase
         $this->get('/quote_view?id='.$quote->id)->assertOk()->assertSee('Priority Care Plus')->assertSee('17.5% of the setup subtotal per 3 months')->assertSee('Osama Social Accelerator')->assertSee('$1,250.00/month for 18 months.');
     }
 
+    public function test_admin_can_create_setup_package_add_service_and_use_it_in_quote_studio(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+
+        $this->post('/quote_settings',[
+            'action'=>'save_quote_package','name'=>'Enterprise Launch','name_ar'=>'إطلاق المؤسسات','name_he'=>'השקת Enterprise',
+            'tier'=>'enterprise','description'=>'A custom enterprise launch package.','description_ar'=>'باقة إطلاق مخصصة للمؤسسات.','description_he'=>'חבילת השקה מותאמת לארגונים.','display_order'=>4,'active'=>1,
+        ])->assertRedirect('/quote_settings')->assertSessionHas('success');
+
+        $package=DB::table('packages')->where('package_type','quote_setup')->where('tier','enterprise')->first();
+        $service=DB::table('services')->where('name','SEO')->first();
+        $this->post('/quote_settings',[
+            'action'=>'add_quote_package_item','package_id'=>$package->id,'service_id'=>$service->id,'unit_price'=>2400,'sort_order'=>1,
+            'description'=>'Enterprise SEO strategy, technical audit, and implementation.','description_ar'=>'استراتيجية SEO وتدقيق تقني وتنفيذ للمؤسسات.','description_he'=>'אסטרטגיית SEO, ביקורת טכנית ויישום לארגונים.','included'=>1,
+        ])->assertRedirect('/quote_settings')->assertSessionHas('success');
+
+        $item=DB::table('package_items')->where('package_id',$package->id)->where('service_id',$service->id)->first();
+        $this->assertNotNull($item);
+        $this->get('/quote_settings')->assertOk()->assertSee('Add package')->assertSee('Add service to package')->assertSee('Enterprise Launch');
+        $this->get('/quote_studio')->assertOk()->assertSee('Enterprise Launch')->assertSee('data-tier="enterprise"',false);
+
+        $answers=[];foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][1]['value'];}
+        $this->post('/quote_studio',[
+            'action'=>'save_quote','business_name'=>'Enterprise Package Client','contact_name'=>'Package Test','contact_email'=>'package@example.test','locale'=>'en',
+            'assessment_json'=>json_encode($answers),'selected_tier'=>'enterprise','items_json'=>json_encode([['service_id'=>$service->id,'list_price'=>2400,'discount_percent'=>0,'custom_price'=>null,'description'=>$item->description,'description_ar'=>$item->description_ar,'description_he'=>$item->description_he]]),
+            'support_plan'=>'none','membership_plan'=>'none','membership_term'=>0,'tax_percent'=>13,'validity_days'=>7,
+        ])->assertSessionHas('success');
+        $this->assertDatabaseHas('proposals',['business_name'=>'Enterprise Package Client','package_id'=>$package->id,'selected_tier'=>'enterprise']);
+
+        $this->post('/quote_settings',['action'=>'remove_quote_package_item','package_item_id'=>$item->id])
+            ->assertRedirect('/quote_settings')->assertSessionHas('success');
+        $this->assertDatabaseMissing('package_items',['id'=>$item->id]);
+    }
+
     public function test_super_admin_can_edit_role_details_and_permissions(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
