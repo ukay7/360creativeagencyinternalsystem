@@ -412,6 +412,51 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseMissing('package_items',['id'=>$item->id]);
     }
 
+    public function test_admin_can_update_service_catalog_price_from_quote_settings(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $service = DB::table('services')->where('name', 'SEO')->first();
+
+        $this->post('/quote_settings', [
+            'action'=>'save_quote_service', 'service_id'=>$service->id, 'category_id'=>$service->category_id,
+            'name'=>$service->name, 'name_ar'=>$service->name_ar, 'name_he'=>$service->name_he,
+            'description'=>$service->description, 'description_ar'=>$service->description_ar, 'description_he'=>$service->description_he,
+            'pricing_type'=>$service->pricing_type, 'default_price'=>'1875.50', 'cost_estimate'=>$service->cost_estimate,
+            'estimated_hours'=>$service->estimated_hours, 'quote_sort'=>$service->quote_sort,
+            'taxable'=>1, 'active'=>1, 'quote_enabled'=>1,
+        ])->assertRedirect('/quote_settings')->assertSessionHas('success');
+
+        $this->assertDatabaseHas('services', ['id'=>$service->id, 'default_price'=>1875.50]);
+        $this->get('/quote_settings')->assertOk()->assertSee('$1,875.50')->assertSee('data.service_id=data.id', false);
+    }
+
+    public function test_admin_can_delete_a_saved_quote_and_its_dependent_records(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $proposalId = DB::table('proposals')->insertGetId([
+            'proposal_number'=>'Q-DELETE-TEST', 'builder_version'=>1, 'client_id'=>null, 'package_id'=>null,
+            'title'=>'Delete test quote', 'business_name'=>'Delete Test Business', 'contact_name'=>'Delete Test Contact',
+            'contact_email'=>'delete@example.test', 'subtotal'=>500, 'total'=>500, 'status'=>'draft',
+            'share_token'=>'delete-test-token', 'created_at'=>now()->toIso8601String(), 'updated_at'=>now()->toIso8601String(),
+        ]);
+        DB::table('proposal_items')->insert([
+            'proposal_id'=>$proposalId, 'service_id'=>null, 'description'=>'Temporary quote item',
+            'quantity'=>1, 'unit_price'=>500, 'total'=>500,
+        ]);
+        DB::table('proposal_deliveries')->insert([
+            'proposal_id'=>$proposalId, 'recipient'=>'delete@example.test', 'channel'=>'email',
+            'locale'=>'en', 'status'=>'recorded', 'sent_at'=>now()->toIso8601String(),
+        ]);
+
+        $this->get('/saved_quotes')->assertOk()->assertSee('Delete Test Business')->assertSee('Delete quote');
+        $this->post('/saved_quotes', ['action'=>'delete_quote', 'proposal_id'=>$proposalId])
+            ->assertRedirect('/saved_quotes')->assertSessionHas('success');
+
+        $this->assertDatabaseMissing('proposals', ['id'=>$proposalId]);
+        $this->assertDatabaseMissing('proposal_items', ['proposal_id'=>$proposalId]);
+        $this->assertDatabaseMissing('proposal_deliveries', ['proposal_id'=>$proposalId]);
+    }
+
     public function test_super_admin_can_edit_role_details_and_permissions(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());

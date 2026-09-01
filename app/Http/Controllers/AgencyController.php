@@ -162,6 +162,7 @@ final class AgencyController extends Controller
                 'update_pipeline_stage'=>['settings.access', fn()=>$this->agency->updatePipelineStage($input), 'settings', 'Pipeline stage updated and probabilities synchronized.'],
                 'save_quote'=>['proposals.access', fn()=>$this->quotes->save($input), 'quote_view', 'Quote saved. You can now review, print, or send it.'],
                 'duplicate_quote'=>['proposals.access', fn()=>$this->quotes->duplicate((int)$input['proposal_id']), 'quote_studio', 'A new editable quote revision was created.'],
+                'delete_quote'=>['proposals.access', fn()=>$this->quotes->deleteQuote((int)$input['proposal_id']), 'saved_quotes', 'Quote deleted successfully.'],
                 'record_quote_delivery'=>['proposals.access', fn()=>$this->quotes->recordDelivery($input), 'quote_view', 'Quote delivery was recorded. You can send the prepared email draft now.'],
                 'onboard_quote'=>['proposals.access', fn()=>$this->quotes->onboard((int)$input['proposal_id']), 'client', 'Quote accepted and the client was onboarded.'],
                 'save_quote_service'=>['settings.access', fn()=>$this->quotes->saveService($input), 'quote_settings', 'Service catalog updated.'],

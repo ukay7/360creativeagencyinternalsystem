@@ -196,6 +196,23 @@ final class QuoteStudioService
         });
     }
 
+    public function deleteQuote(int $id): int
+    {
+        $quote = $this->quote($id);
+        if (! $quote) { throw new InvalidArgumentException('The quote could not be found.'); }
+
+        return $this->db->transaction(function () use ($id, $quote): int {
+            // Keep later revisions valid when their original quote is removed.
+            $this->db->execute('UPDATE proposals SET parent_proposal_id=NULL WHERE parent_proposal_id=?', [$id]);
+            $deleted = $this->db->execute('DELETE FROM proposals WHERE id=? AND builder_version IS NOT NULL', [$id]);
+            if ($deleted !== 1) { throw new InvalidArgumentException('The quote could not be deleted.'); }
+
+            // Proposal items and delivery records are removed by their cascading foreign keys.
+            $this->audit('quote.deleted', 'Quote '.$quote['proposal_number'].' deleted for '.$quote['business_name'], 'proposal', $id);
+            return $id;
+        });
+    }
+
     public function recordDelivery(array $input): int
     {
         $id = (int)($input['proposal_id'] ?? 0);
