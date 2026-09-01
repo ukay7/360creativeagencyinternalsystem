@@ -457,6 +457,39 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseMissing('proposal_deliveries', ['proposal_id'=>$proposalId]);
     }
 
+    public function test_clients_list_uses_accepted_quote_package_and_monthly_value_without_legacy_subscription(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $businessId = DB::table('businesses')->insertGetId([
+            'name'=>'XYZ Quote Fallback', 'industry'=>'Professional Services', 'created_at'=>now()->toIso8601String(),
+        ]);
+        $clientId = DB::table('clients')->insertGetId([
+            'business_id'=>$businessId, 'account_manager_id'=>null, 'name'=>'XYZ Contact',
+            'email'=>'xyz-fallback@example.test', 'status'=>'active', 'health'=>'healthy',
+            'joined_at'=>now()->toDateString(), 'created_at'=>now()->toIso8601String(),
+        ]);
+        $package = DB::table('packages')->where('package_type', 'quote_setup')->where('tier', 'basic')->first();
+        DB::table('proposals')->insert([
+            'proposal_number'=>'Q-CLIENT-FALLBACK', 'builder_version'=>1, 'client_id'=>$clientId,
+            'package_id'=>$package->id, 'title'=>'XYZ accepted quote', 'business_name'=>'XYZ Quote Fallback',
+            'contact_name'=>'XYZ Contact', 'contact_email'=>'xyz-fallback@example.test', 'selected_tier'=>'basic',
+            'membership_plan'=>'growth', 'membership_name'=>'Social Media Growth',
+            'membership_duration_months'=>12, 'membership_monthly_price'=>1495,
+            'subtotal'=>17940, 'total'=>17940, 'status'=>'accepted', 'share_token'=>'xyz-fallback-token',
+            'created_at'=>now()->toIso8601String(), 'updated_at'=>now()->toIso8601String(),
+        ]);
+
+        $row = collect(app(\App\Services\AgencyService::class)->clients())->firstWhere('id', $clientId);
+        $this->assertSame($package->name, $row['package_name']);
+        $this->assertSame(1495.0, (float)$row['monthly_price']);
+
+        $this->get('/clients')->assertOk()
+            ->assertSee('XYZ Quote Fallback')->assertSee($package->name)->assertSee('$1,495.00')
+            ->assertSee('Unpaid invoices')
+            ->assertDontSee('<th>Health</th>', false)
+            ->assertDontSee('<th>Account manager</th>', false);
+    }
+
     public function test_super_admin_can_edit_role_details_and_permissions(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());

@@ -94,7 +94,18 @@ final class AgencyService
 
     public function clients(): array
     {
-        return $this->db->all("SELECT c.*, b.name AS business_name, b.industry, e.name AS account_manager, s.monthly_price, p.name AS package_name, COALESCE((SELECT SUM(i.total-i.amount_paid) FROM invoices i WHERE i.client_id=c.id AND i.status NOT IN ('paid','cancelled')),0) AS outstanding FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=c.account_manager_id LEFT JOIN subscriptions s ON s.client_id=c.id AND s.status='active' LEFT JOIN packages p ON p.id=s.package_id ORDER BY b.name");
+        return $this->db->all("SELECT c.*, b.name AS business_name, b.industry,
+            COALESCE(
+                (SELECT s.monthly_price FROM subscriptions s WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
+                (SELECT q.membership_monthly_price FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1),
+                0
+            ) AS monthly_price,
+            COALESCE(
+                (SELECT p.name FROM subscriptions s JOIN packages p ON p.id=s.package_id WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
+                (SELECT qp.name FROM proposals q LEFT JOIN packages qp ON qp.id=q.package_id WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1)
+            ) AS package_name,
+            COALESCE((SELECT SUM(i.total-i.amount_paid) FROM invoices i WHERE i.client_id=c.id AND i.status NOT IN ('paid','cancelled')),0) AS outstanding
+            FROM clients c JOIN businesses b ON b.id=c.business_id ORDER BY b.name");
     }
 
     public function client(int $id): ?array
