@@ -31,6 +31,85 @@
     }
     function dictionary(key) { return (dictionaries[locale] && dictionaries[locale][key]) || (dictionaries.en && dictionaries.en[key]) || key; }
 
+    var relationshipSelect = document.getElementById('existing-relationship');
+    var relationshipSearch = document.getElementById('relationship-search');
+    var relationshipList = document.getElementById('relationship-options');
+    var relationshipToggle = document.getElementById('relationship-toggle');
+    var relationshipActiveIndex = -1;
+
+    function relationshipChoices() { return Array.prototype.slice.call(relationshipSelect.options); }
+    function selectedRelationshipText() {
+        var option = relationshipSelect.options[relationshipSelect.selectedIndex];
+        return option ? option.textContent.trim() : dictionary('no_existing_client');
+    }
+    function closeRelationshipPicker() {
+        relationshipList.hidden = true;
+        relationshipSearch.setAttribute('aria-expanded', 'false');
+        relationshipToggle.classList.remove('open');
+        relationshipActiveIndex = -1;
+    }
+    function visibleRelationshipButtons() { return Array.prototype.slice.call(relationshipList.querySelectorAll('[data-relationship-value]')); }
+    function focusRelationshipOption(index) {
+        var buttons = visibleRelationshipButtons();
+        if (!buttons.length) return;
+        relationshipActiveIndex = Math.max(0, Math.min(index, buttons.length - 1));
+        buttons.forEach(function (button, buttonIndex) { button.classList.toggle('focused', buttonIndex === relationshipActiveIndex); });
+        buttons[relationshipActiveIndex].scrollIntoView({block:'nearest'});
+    }
+    function renderRelationshipOptions(query) {
+        var normalizedQuery = String(query || '').trim().toLocaleLowerCase();
+        var matches = relationshipChoices().filter(function (option) {
+            var searchText = (option.textContent + ' ' + (option.dataset.search || '')).toLocaleLowerCase();
+            return !normalizedQuery || searchText.indexOf(normalizedQuery) !== -1;
+        });
+        relationshipList.innerHTML = '';
+        matches.forEach(function (option) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.dataset.relationshipValue = option.value;
+            button.setAttribute('role', 'option');
+            button.setAttribute('aria-selected', option.value === relationshipSelect.value ? 'true' : 'false');
+            button.className = 'quote-relationship-option' + (option.value === relationshipSelect.value ? ' selected' : '');
+            button.innerHTML = '<span>' + esc(option.textContent.trim()) + '</span><i class="fal fa-check" aria-hidden="true"></i>';
+            button.addEventListener('click', function () { chooseRelationship(option.value); });
+            relationshipList.appendChild(button);
+        });
+        if (!matches.length) {
+            var empty = document.createElement('p');
+            empty.className = 'quote-relationship-empty';
+            empty.textContent = dictionary('no_relationship_results');
+            relationshipList.appendChild(empty);
+        }
+        relationshipActiveIndex = -1;
+    }
+    function openRelationshipPicker(showAll) {
+        if (showAll) relationshipSearch.value = '';
+        renderRelationshipOptions(relationshipSearch.value);
+        relationshipList.hidden = false;
+        relationshipSearch.setAttribute('aria-expanded', 'true');
+        relationshipToggle.classList.add('open');
+    }
+    function syncRelationshipPicker() {
+        relationshipSearch.placeholder = dictionary('search_relationship');
+        relationshipSearch.value = selectedRelationshipText();
+        if (!relationshipList.hidden) renderRelationshipOptions('');
+    }
+    function chooseRelationship(value) {
+        relationshipSelect.value = value;
+        relationshipSelect.dispatchEvent(new Event('change', {bubbles:true}));
+        relationshipSearch.focus();
+        closeRelationshipPicker();
+        syncRelationshipPicker();
+        relationshipSearch.select();
+    }
+    function clearClientDetails() {
+        ['contact_name','business_name','contact_email','contact_phone','website','internal_notes'].forEach(function (name) {
+            if (form.elements[name]) form.elements[name].value = '';
+        });
+        form.elements.business_stage.value = '';
+        form.elements.years_operating.value = '';
+    }
+
     function applyLanguage() {
         root.setAttribute('dir', locale === 'en' ? 'ltr' : 'rtl');
         root.dataset.locale = locale;
@@ -40,6 +119,7 @@
         });
         root.querySelectorAll('.assessment-label').forEach(function (node) { node.textContent = node.dataset[locale] || node.dataset.en; });
         root.querySelectorAll('.assessment-answer option').forEach(function (option) { option.textContent = option.dataset[locale] || option.dataset.en; });
+        syncRelationshipPicker();
         renderWeightList(); renderServices(false); renderPlans(); updateReview();
     }
 
@@ -238,8 +318,34 @@
     document.getElementById('quote-back').addEventListener('click',function(){showStep(step-1);});
     form.addEventListener('input',function(event){if(event.target.closest('[data-step="1"]'))updateReview();});
     form.addEventListener('submit',function(event){updateAssessment(false);updateReview();if(!activeItems.length){event.preventDefault();window.alert('Select at least one setup service.');}});
-    document.getElementById('existing-relationship').addEventListener('change',function(){var relationship=(data.relationships||[]).find(function(row){return row.key===this.value;},this);if(!relationship)return;form.elements.contact_name.value=relationship.contact_name||'';form.elements.business_name.value=relationship.business_name||'';form.elements.contact_email.value=relationship.email||'';form.elements.contact_phone.value=relationship.phone||'';form.elements.website.value=relationship.website||'';form.elements.years_operating.value=relationship.years_in_business||0;if(relationship.business_stage)form.elements.business_stage.value=relationship.business_stage;updateReview();});
+    relationshipSelect.addEventListener('change',function(){
+        clearClientDetails();
+        var relationship=(data.relationships||[]).find(function(row){return row.key===this.value;},this);
+        if(relationship){
+            form.elements.contact_name.value=relationship.contact_name||'';
+            form.elements.business_name.value=relationship.business_name||'';
+            form.elements.contact_email.value=relationship.email||'';
+            form.elements.contact_phone.value=relationship.phone||'';
+            form.elements.website.value=relationship.website||'';
+            form.elements.internal_notes.value=relationship.internal_notes||'';
+            form.elements.years_operating.value=relationship.years_in_business == null ? '' : relationship.years_in_business;
+            form.elements.business_stage.value=relationship.business_stage||'';
+        }
+        syncRelationshipPicker();
+        updateReview();
+    });
+    relationshipSearch.addEventListener('focus',function(){this.select();openRelationshipPicker(true);});
+    relationshipSearch.addEventListener('input',function(){openRelationshipPicker(false);});
+    relationshipSearch.addEventListener('keydown',function(event){
+        var buttons=visibleRelationshipButtons();
+        if(event.key==='ArrowDown'){event.preventDefault();if(relationshipList.hidden)openRelationshipPicker(false);focusRelationshipOption(relationshipActiveIndex+1);}
+        else if(event.key==='ArrowUp'){event.preventDefault();focusRelationshipOption(relationshipActiveIndex<0?buttons.length-1:relationshipActiveIndex-1);}
+        else if(event.key==='Enter'&&!relationshipList.hidden){event.preventDefault();buttons=visibleRelationshipButtons();if(buttons.length)buttons[Math.max(0,relationshipActiveIndex)].click();}
+        else if(event.key==='Escape'){closeRelationshipPicker();syncRelationshipPicker();}
+    });
+    relationshipToggle.addEventListener('click',function(){if(relationshipList.hidden){relationshipSearch.focus();openRelationshipPicker(true);}else{closeRelationshipPicker();syncRelationshipPicker();}});
+    document.addEventListener('click',function(event){if(!event.target.closest('#quote-relationship-combobox')){closeRelationshipPicker();syncRelationshipPicker();}});
 
     root.querySelectorAll('[data-step-tab]').forEach(function(button){button.setAttribute('aria-selected',button.dataset.stepTab==='1'?'true':'false');});
-    renderWeightList(); document.getElementById('tier-override').value=tier; renderServices(!!proposal); renderPlans(); updateAssessment(false); applyLanguage(); showStep(1);
+    syncRelationshipPicker(); renderWeightList(); document.getElementById('tier-override').value=tier; renderServices(!!proposal); renderPlans(); updateAssessment(false); applyLanguage(); showStep(1);
 })();

@@ -345,6 +345,27 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseHas('quote_memberships', ['code'=>'custom','name'=>'Custom social media plan']);
     }
 
+    public function test_quote_client_picker_is_searchable_and_new_prospect_resets_client_fields(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+
+        $this->get('/quote_studio')
+            ->assertOk()
+            ->assertSee('id="relationship-search"', false)
+            ->assertSee('role="combobox"', false)
+            ->assertSee('Search by business, contact, email, or phone')
+            ->assertSee('class="required" data-i18n="contact_name"', false)
+            ->assertSee('class="required" data-i18n="business_name"', false)
+            ->assertSee('class="required" data-i18n="email"', false)
+            ->assertSee('data-i18n="select_business_stage"', false);
+
+        $script = file_get_contents(public_path('assets/js/quote-studio.js'));
+        $this->assertStringContainsString('function clearClientDetails()', $script);
+        $this->assertStringContainsString("form.elements.business_stage.value = '';", $script);
+        $this->assertStringContainsString("form.elements.years_operating.value = '';", $script);
+        $this->assertStringContainsString("['contact_name','business_name','contact_email','contact_phone','website','internal_notes']", $script);
+    }
+
     public function test_quote_studio_saves_custom_support_and_custom_membership_term(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
