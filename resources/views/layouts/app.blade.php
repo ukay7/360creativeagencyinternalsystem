@@ -115,7 +115,7 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                     <div class="dropdown mr-2">
                         <button class="btn btn-primary btn-sm rounded-pill px-3" data-toggle="dropdown"><i class="fal fa-plus mr-1"></i> Quick add</button>
                         <div class="dropdown-menu dropdown-menu-right p-2 quick-menu">
-                            <?php foreach ([['quote_studio','file-invoice-dollar','Quote'],['clients','building','Client'],['projects','briefcase','Project'],['tasks','check-square','Task'],['visits','camera-retro','Visit'],['invoices','file-invoice-dollar','Invoice'],['content','calendar-plus','Content'],['media','photo-video','Media'],['time','clock','Time']] as $quick): ?>
+                            <?php foreach ([['quote_studio','file-invoice-dollar','Quote'],['projects','briefcase','Project'],['tasks','check-square','Task'],['invoices','file-invoice-dollar','Invoice']] as $quick): ?>
                                 <a class="dropdown-item" href="<?= e(url($quick[0])) ?>#modal-add"><i class="fal fa-<?= e($quick[1]) ?> mr-2 text-primary"></i><?= e($quick[2]) ?></a>
                             <?php endforeach; ?>
                         </div>

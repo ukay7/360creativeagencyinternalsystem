@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use DateTimeImmutable;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -18,7 +19,12 @@ final class QuoteStudioService
         $packages = $this->db->all("SELECT p.*,pp.base_price FROM packages p LEFT JOIN package_pricing pp ON pp.package_id=p.id AND pp.effective_to IS NULL WHERE p.package_type='quote_setup' AND p.active=1 ORDER BY p.display_order,p.id");
         foreach ($packages as &$package) {
             $package['items'] = $this->db->all("SELECT pi.*,s.name,s.name_ar,s.name_he,s.description AS service_description,s.description_ar AS service_description_ar,s.description_he AS service_description_he,sc.name AS category FROM package_items pi JOIN services s ON s.id=pi.service_id JOIN service_categories sc ON sc.id=s.category_id WHERE pi.package_id=? AND s.active=1 AND s.quote_enabled=1 ORDER BY pi.sort_order,pi.id", [(int)$package['id']]);
+            foreach ($package['items'] as &$item) {
+                $item['work_items'] = $this->resolvedWorkItems((int)$item['service_id'], (int)$package['id']);
+            }
+            unset($item);
         }
+        unset($package);
 
         $proposal = $proposalId > 0 ? $this->quote($proposalId) : null;
         $relationships = $this->relationshipOptions();
@@ -49,8 +55,16 @@ final class QuoteStudioService
             $where[] = '(p.proposal_number LIKE ? OR p.business_name LIKE ? OR p.contact_name LIKE ? OR p.contact_email LIKE ?)';
             array_push($parameters, ...array_fill(0, 4, '%'.$query.'%'));
         }
+        if (($packageId = (int)($filters['package_id'] ?? 0)) > 0) { $where[]='p.package_id=?'; $parameters[]=$packageId; }
+        if (($dateFrom = trim((string)($filters['date_from'] ?? ''))) !== '') { $where[]='DATE(COALESCE(p.updated_at,p.created_at))>=?'; $parameters[]=$dateFrom; }
+        if (($dateTo = trim((string)($filters['date_to'] ?? ''))) !== '') { $where[]='DATE(COALESCE(p.updated_at,p.created_at))<=?'; $parameters[]=$dateTo; }
 
-        return $this->db->all('SELECT p.*,pk.name AS package_name,pk.tier AS package_tier,(SELECT COUNT(*) FROM proposal_deliveries d WHERE d.proposal_id=p.id) AS delivery_count FROM proposals p LEFT JOIN packages pk ON pk.id=p.package_id WHERE '.implode(' AND ', $where).' ORDER BY COALESCE(p.updated_at,p.created_at) DESC,p.id DESC', $parameters);
+        return $this->db->all('SELECT p.*,pk.name AS package_name,pk.tier AS package_tier FROM proposals p LEFT JOIN packages pk ON pk.id=p.package_id WHERE '.implode(' AND ', $where).' ORDER BY COALESCE(p.updated_at,p.created_at) DESC,p.id DESC', $parameters);
+    }
+
+    public function savedQuoteFilterOptions(): array
+    {
+        return ['packages'=>$this->db->all('SELECT DISTINCT pk.id,pk.name FROM proposals p JOIN packages pk ON pk.id=p.package_id WHERE p.builder_version IS NOT NULL ORDER BY pk.name')];
     }
 
     public function quote(int $id): ?array
@@ -59,6 +73,11 @@ final class QuoteStudioService
         if (! $quote) { return null; }
         $quote['assessment'] = json_decode((string)($quote['assessment_data'] ?? '{}'), true) ?: [];
         $quote['items'] = $this->db->all('SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY sort_order,id', [$id]);
+        $workItems = $this->db->all('SELECT * FROM proposal_work_items WHERE proposal_id=? ORDER BY sort_order,id', [$id]);
+        $workItemsByProposalItem = [];
+        foreach ($workItems as $workItem) { $workItemsByProposalItem[(int)$workItem['proposal_item_id']][] = $workItem; }
+        foreach ($quote['items'] as &$item) { $item['work_items'] = $workItemsByProposalItem[(int)$item['id']] ?? []; }
+        unset($item);
         $quote['deliveries'] = $this->db->all('SELECT * FROM proposal_deliveries WHERE proposal_id=? ORDER BY sent_at DESC,id DESC', [$id]);
         return $quote;
     }
@@ -106,6 +125,7 @@ final class QuoteStudioService
                 'service_id'=>(int)$catalog['id'],'item_type'=>'service','title'=>$catalog['name'],'title_ar'=>$catalog['name_ar'],'title_he'=>$catalog['name_he'],
                 'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'category'=>$catalog['category'],
                 'quantity'=>1,'unit_price'=>$listPrice,'discount_percent'=>$discount,'total'=>$finalPrice,'sort_order'=>$index + 1,
+                'work_items'=>$this->normalizeQuoteWorkItems((array)($item['work_items'] ?? []), (int)$catalog['id'], (int)$package['id']),
             ];
             $setupSubtotal += $finalPrice;
         }
@@ -135,6 +155,7 @@ final class QuoteStudioService
         $proposalId = max(0, (int)($input['proposal_id'] ?? 0));
         $existing = $proposalId ? $this->quote($proposalId) : null;
         if ($proposalId && ! $existing) { throw new InvalidArgumentException('The quote could not be found.'); }
+        if ($existing && ($existing['status'] ?? '') === 'accepted') { throw new InvalidArgumentException('Accepted quotes are locked. Create a new revision to make changes.'); }
 
         return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$setupSubtotal,$support,$customSupport,$supportName,$supportDuration,$supportRatePercent,$supportAmount,$membership,$membershipName,$membershipDuration,$membershipMonthlyPrice,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
             $now = date('c');
@@ -158,7 +179,12 @@ final class QuoteStudioService
                 $values += ['proposal_number'=>$this->nextNumber(),'status'=>'draft','revision'=>1,'sent_count'=>0,'share_token'=>Str::random(48),'created_at'=>$now];
                 $proposalId = $this->db->insert('proposals', $values);
             }
-            foreach ($normalizedItems as $row) { $this->db->insert('proposal_items', ['proposal_id'=>$proposalId] + $row); }
+            foreach ($normalizedItems as $row) {
+                $workItems = $row['work_items'];
+                unset($row['work_items']);
+                $proposalItemId = $this->db->insert('proposal_items', ['proposal_id'=>$proposalId] + $row);
+                $this->snapshotWorkItems($proposalId, $proposalItemId, (int)$row['service_id'], (int)$package['id'], $workItems);
+            }
             if ((string)$support['code'] !== 'none') {
                 $rateLabel = rtrim(rtrim(number_format($supportRatePercent, 2), '0'), '.');
                 $description = $customSupport ? 'Technical support for '.$supportDuration.' months at '.$rateLabel.'% of the setup subtotal per 3 months.' : (string)$support['description'];
@@ -190,7 +216,18 @@ final class QuoteStudioService
             $copy['revision'] = (int)$this->db->scalar('SELECT COALESCE(MAX(revision),0)+1 FROM proposals WHERE id=? OR parent_proposal_id=?', [$id,$id]);
             $copy['status'] = 'draft'; $copy['sent_count'] = 0; $copy['last_sent_at'] = null; $copy['share_token'] = Str::random(48); $copy['created_at'] = date('c'); $copy['updated_at'] = date('c');
             $newId = $this->db->insert('proposals', $copy);
-            foreach ($quote['items'] as $item) { unset($item['id']); $item['proposal_id']=$newId; $this->db->insert('proposal_items', $item); }
+            foreach ($quote['items'] as $item) {
+                $workItems = $item['work_items'] ?? [];
+                unset($item['id'], $item['work_items']);
+                $item['proposal_id']=$newId;
+                $newProposalItemId = $this->db->insert('proposal_items', $item);
+                foreach ($workItems as $workItem) {
+                    unset($workItem['id']);
+                    $workItem['proposal_id'] = $newId;
+                    $workItem['proposal_item_id'] = $newProposalItemId;
+                    $this->db->insert('proposal_work_items', $workItem);
+                }
+            }
             $this->audit('quote.duplicated', 'Quote '.$id.' duplicated as '.$newId, 'proposal', $newId);
             return $newId;
         });
@@ -200,6 +237,9 @@ final class QuoteStudioService
     {
         $quote = $this->quote($id);
         if (! $quote) { throw new InvalidArgumentException('The quote could not be found.'); }
+        if (($quote['status'] ?? '') === 'accepted') {
+            throw new InvalidArgumentException('Accepted and onboarded quotes cannot be deleted. Create a new revision if another quote is required.');
+        }
 
         return $this->db->transaction(function () use ($id, $quote): int {
             // Keep later revisions valid when their original quote is removed.
@@ -232,12 +272,17 @@ final class QuoteStudioService
     {
         $quote = $this->quote($id);
         if (! $quote) { throw new InvalidArgumentException('The quote could not be found.'); }
-        if (! empty($quote['client_id'])) { return (int)$quote['client_id']; }
-        if (empty($quote['lead_id'])) { throw new InvalidArgumentException('This quote is not linked to a prospect.'); }
-        $lead = $this->db->first('SELECT converted_client_id FROM leads WHERE id=?', [(int)$quote['lead_id']]);
-        if (! $lead) { throw new InvalidArgumentException('The linked prospect no longer exists.'); }
-        $clientId = ! empty($lead['converted_client_id']) ? (int)$lead['converted_client_id'] : (new AgencyService($this->db, $this->auth))->convertLead((int)$quote['lead_id']);
-        $this->db->execute("UPDATE proposals SET client_id=?,status='accepted',updated_at=? WHERE id=?", [$clientId,date('c'),$id]);
+        $clientId = (int)($quote['client_id'] ?? 0);
+        if (! $clientId) {
+            if (empty($quote['lead_id'])) { throw new InvalidArgumentException('This quote is not linked to a prospect.'); }
+            $lead = $this->db->first('SELECT converted_client_id FROM leads WHERE id=?', [(int)$quote['lead_id']]);
+            if (! $lead) { throw new InvalidArgumentException('The linked prospect no longer exists.'); }
+            $clientId = ! empty($lead['converted_client_id']) ? (int)$lead['converted_client_id'] : (new AgencyService($this->db, $this->auth))->convertLead((int)$quote['lead_id']);
+        }
+        $this->db->transaction(function () use ($quote, $clientId, $id): void {
+            $this->db->execute("UPDATE proposals SET client_id=?,status='accepted',updated_at=? WHERE id=?", [$clientId,date('c'),$id]);
+            $this->createDeliveryProjects($quote, $clientId);
+        });
         $this->audit('quote.onboarded', 'Quote '.$id.' accepted and client '.$clientId.' onboarded', 'proposal', $id);
         return $clientId;
     }
@@ -245,8 +290,20 @@ final class QuoteStudioService
     public function settingsData(): array
     {
         $packages = $this->builderData()['packages'];
+        $services = $this->db->all('SELECT s.*,sc.name AS category_name FROM services s JOIN service_categories sc ON sc.id=s.category_id ORDER BY s.quote_sort,s.name');
+        $workItems = $this->db->all('SELECT * FROM service_work_items ORDER BY service_id,sort_order,id');
+        $rules = $this->db->all('SELECT * FROM package_service_item_rules ORDER BY package_id,id');
+        $rulesByWorkItem = [];
+        foreach ($rules as $rule) { $rulesByWorkItem[(int)$rule['service_work_item_id']][(int)$rule['package_id']] = $rule; }
+        $workItemsByService = [];
+        foreach ($workItems as $workItem) {
+            $workItem['package_rules'] = $rulesByWorkItem[(int)$workItem['id']] ?? [];
+            $workItemsByService[(int)$workItem['service_id']][] = $workItem;
+        }
+        foreach ($services as &$service) { $service['work_items'] = $workItemsByService[(int)$service['id']] ?? []; }
+        unset($service);
         return [
-            'services'=>$this->db->all('SELECT s.*,sc.name AS category_name FROM services s JOIN service_categories sc ON sc.id=s.category_id ORDER BY s.quote_sort,s.name'),
+            'services'=>$services,
             'categories'=>$this->db->all('SELECT id,name FROM service_categories WHERE active=1 ORDER BY name'),
             'packages'=>$packages,
             'supportPlans'=>$this->db->all('SELECT * FROM quote_support_plans ORDER BY sort_order,id'),
@@ -260,9 +317,19 @@ final class QuoteStudioService
         $categoryId = (int)($input['category_id'] ?? 0);
         if ($name === '' || ! $this->db->scalar('SELECT id FROM service_categories WHERE id=?', [$categoryId])) { throw new InvalidArgumentException('Service name and category are required.'); }
         $values = ['category_id'=>$categoryId,'name'=>$name,'name_ar'=>trim((string)($input['name_ar'] ?? '')) ?: null,'name_he'=>trim((string)($input['name_he'] ?? '')) ?: null,'description'=>trim((string)($input['description'] ?? '')) ?: null,'description_ar'=>trim((string)($input['description_ar'] ?? '')) ?: null,'description_he'=>trim((string)($input['description_he'] ?? '')) ?: null,'pricing_type'=>(string)($input['pricing_type'] ?? 'one_time'),'default_price'=>max(0,(float)($input['default_price'] ?? 0)),'cost_estimate'=>max(0,(float)($input['cost_estimate'] ?? 0)),'estimated_hours'=>max(0,(float)($input['estimated_hours'] ?? 0)),'taxable'=>!empty($input['taxable'])?1:0,'active'=>!empty($input['active'])?1:0,'quote_enabled'=>!empty($input['quote_enabled'])?1:0,'quote_sort'=>max(0,(int)($input['quote_sort'] ?? 0))];
-        $id = (int)($input['service_id'] ?? 0);
-        if ($id) { $this->db->update('services',$id,$values); }
-        else { $values['created_at']=date('c'); $id=$this->db->insert('services',$values); }
+        $id = $this->db->transaction(function () use ($input, $values): int {
+            $id = (int)($input['service_id'] ?? 0);
+            if ($id) {
+                if (! $this->db->scalar('SELECT id FROM services WHERE id=?', [$id])) { throw new InvalidArgumentException('Service not found.'); }
+                $this->db->update('services',$id,$values);
+            } else {
+                $created = $values;
+                $created['created_at']=date('c');
+                $id=$this->db->insert('services',$created);
+            }
+            if (! empty($input['work_items_present'])) { $this->syncServiceWorkItems($id, (array)($input['work_items'] ?? [])); }
+            return $id;
+        });
         $this->audit('quote.service_saved','Quote service '.$id.' saved','service',$id);
         return $id;
     }
@@ -295,7 +362,11 @@ final class QuoteStudioService
         if(!$service){throw new InvalidArgumentException('Select an active Quote Studio service.');}
         if($this->db->scalar('SELECT id FROM package_items WHERE package_id=? AND service_id=?',[$packageId,$serviceId])){throw new InvalidArgumentException('That service is already in this package.');}
         $description=trim((string)($input['description']??''))?:$service['description'];
-        $id=$this->db->insert('package_items',['package_id'=>$packageId,'service_id'=>$serviceId,'quantity'=>1,'unit_price'=>max(0,(float)($input['unit_price']??$service['default_price'])),'scope_note'=>$description,'description'=>$description,'description_ar'=>trim((string)($input['description_ar']??''))?:$service['description_ar'],'description_he'=>trim((string)($input['description_he']??''))?:$service['description_he'],'included'=>!empty($input['included'])?1:0,'sort_order'=>max(0,(int)($input['sort_order']??99)),'estimated_cost'=>$service['cost_estimate'],'estimated_hours'=>$service['estimated_hours']]);
+        $id=$this->db->transaction(function () use ($input,$packageId,$serviceId,$service,$description): int {
+            $id=$this->db->insert('package_items',['package_id'=>$packageId,'service_id'=>$serviceId,'quantity'=>1,'unit_price'=>max(0,(float)($input['unit_price']??$service['default_price'])),'scope_note'=>$description,'description'=>$description,'description_ar'=>trim((string)($input['description_ar']??''))?:$service['description_ar'],'description_he'=>trim((string)($input['description_he']??''))?:$service['description_he'],'included'=>!empty($input['included'])?1:0,'sort_order'=>max(0,(int)($input['sort_order']??99)),'estimated_cost'=>$service['cost_estimate'],'estimated_hours'=>$service['estimated_hours']]);
+            $this->syncPackageWorkItems($packageId, $serviceId, (array)($input['work_items'] ?? []));
+            return $id;
+        });
         $this->audit('quote.package_item_added','Service '.$serviceId.' added to package '.$packageId,'package_item',$id);
         return $id;
     }
@@ -303,8 +374,14 @@ final class QuoteStudioService
     public function savePackageItem(array $input): int
     {
         $id=(int)($input['package_item_id']??0);
-        if(!$this->db->scalar('SELECT id FROM package_items WHERE id=?',[$id])){throw new InvalidArgumentException('Package item not found.');}
-        $this->db->update('package_items',$id,['unit_price'=>max(0,(float)($input['unit_price']??0)),'description'=>trim((string)($input['description']??''))?:null,'description_ar'=>trim((string)($input['description_ar']??''))?:null,'description_he'=>trim((string)($input['description_he']??''))?:null,'included'=>!empty($input['included'])?1:0,'sort_order'=>max(0,(int)($input['sort_order']??0))]);
+        $packageItem=$this->db->first('SELECT id,package_id,service_id FROM package_items WHERE id=?',[$id]);
+        if(!$packageItem){throw new InvalidArgumentException('Package item not found.');}
+        $this->db->transaction(function () use ($input,$id,$packageItem): void {
+            $this->db->update('package_items',$id,['unit_price'=>max(0,(float)($input['unit_price']??0)),'description'=>trim((string)($input['description']??''))?:null,'description_ar'=>trim((string)($input['description_ar']??''))?:null,'description_he'=>trim((string)($input['description_he']??''))?:null,'included'=>!empty($input['included'])?1:0,'sort_order'=>max(0,(int)($input['sort_order']??0))]);
+            if (! empty($input['work_items_present'])) {
+                $this->syncPackageWorkItems((int)$packageItem['package_id'], (int)$packageItem['service_id'], (array)($input['work_items'] ?? []));
+            }
+        });
         $this->audit('quote.package_item_saved','Package item '.$id.' saved','package_item',$id);
         return $id;
     }
@@ -329,6 +406,293 @@ final class QuoteStudioService
         } else { throw new InvalidArgumentException('Unknown plan type.'); }
         $this->audit('quote.plan_saved',ucfirst($type).' plan '.$id.' saved','quote_plan',$id);
         return $id;
+    }
+
+    private function resolvedWorkItems(int $serviceId, int $packageId): array
+    {
+        return $this->db->all(
+            'SELECT wi.id,wi.service_id,COALESCE(r.name_override,wi.name) AS name,COALESCE(r.name_ar_override,wi.name_ar) AS name_ar,'.
+            'COALESCE(r.name_he_override,wi.name_he) AS name_he,COALESCE(r.description_override,wi.task_description) AS task_description,'.
+            'COALESCE(r.description_ar_override,wi.task_description_ar) AS task_description_ar,COALESCE(r.description_he_override,wi.task_description_he) AS task_description_he,'.
+            'COALESCE(r.included,0) AS included,r.value_label,r.value_label_ar,r.value_label_he,'.
+            'COALESCE(r.schedule_type,wi.schedule_type) AS schedule_type,COALESCE(r.frequency,wi.frequency) AS frequency,'.
+            'COALESCE(r.interval_count,wi.interval_count) AS interval_count,COALESCE(r.starts_after_days,wi.starts_after_days) AS starts_after_days,'.
+            'COALESCE(r.due_after_days,wi.due_after_days) AS due_after_days,COALESCE(r.occurrence_count,wi.occurrence_count) AS occurrence_count,'.
+            'COALESCE(r.end_after_months,wi.end_after_months) AS end_after_months,COALESCE(r.estimated_hours,wi.estimated_hours) AS estimated_hours,'.
+            'COALESCE(r.sort_order,wi.sort_order) AS sort_order FROM service_work_items wi LEFT JOIN package_service_item_rules r ON r.service_work_item_id=wi.id AND r.package_id=? '.
+            'WHERE wi.service_id=? AND wi.active=1 ORDER BY COALESCE(r.sort_order,wi.sort_order),wi.id',
+            [$packageId,$serviceId]
+        );
+    }
+
+    private function snapshotWorkItems(int $proposalId, int $proposalItemId, int $serviceId, int $packageId, array $submittedItems = []): void
+    {
+        $workItems = $submittedItems ?: $this->normalizeQuoteWorkItems([], $serviceId, $packageId);
+        foreach ($workItems as $workItem) {
+            if (! (int)$workItem['included']) { continue; }
+            $this->db->insert('proposal_work_items', [
+                'proposal_id'=>$proposalId,
+                'proposal_item_id'=>$proposalItemId,
+                'service_work_item_id'=>(int)($workItem['service_work_item_id'] ?? $workItem['id']),
+                'service_id'=>$serviceId,
+                'title'=>$workItem['title'] ?? $workItem['name'] ?? 'Service item',
+                'title_ar'=>$workItem['title_ar'] ?? $workItem['name_ar'] ?? null,
+                'title_he'=>$workItem['title_he'] ?? $workItem['name_he'] ?? null,
+                'description'=>$workItem['description'] ?? $workItem['task_description'] ?? null,
+                'description_ar'=>$workItem['description_ar'] ?? $workItem['task_description_ar'] ?? null,
+                'description_he'=>$workItem['description_he'] ?? $workItem['task_description_he'] ?? null,
+                'scope_value'=>$workItem['scope_value'] ?? $workItem['value_label'] ?? null,
+                'scope_value_ar'=>$workItem['scope_value_ar'] ?? $workItem['value_label_ar'] ?? null,
+                'scope_value_he'=>$workItem['scope_value_he'] ?? $workItem['value_label_he'] ?? null,
+                'schedule_type'=>$workItem['schedule_type'],
+                'frequency'=>$workItem['schedule_type'] === 'recurring' ? $workItem['frequency'] : null,
+                'interval_count'=>max(1,(int)$workItem['interval_count']),
+                'starts_after_days'=>max(0,(int)$workItem['starts_after_days']),
+                'due_after_days'=>max(0,(int)$workItem['due_after_days']),
+                'occurrence_count'=>$workItem['occurrence_count'] !== null ? max(1,(int)$workItem['occurrence_count']) : null,
+                'end_after_months'=>$workItem['end_after_months'] !== null ? max(1,(int)$workItem['end_after_months']) : null,
+                'estimated_hours'=>max(0,(float)$workItem['estimated_hours']),
+                'sort_order'=>(int)$workItem['sort_order'],
+            ]);
+        }
+    }
+
+    private function syncServiceWorkItems(int $serviceId, array $submittedItems): void
+    {
+        $existingIds = array_map('intval', array_column($this->db->all('SELECT id FROM service_work_items WHERE service_id=?', [$serviceId]), 'id'));
+        $keptIds = [];
+        $allowedSchedules = ['one_time','recurring'];
+        $allowedFrequencies = ['daily','weekly','monthly','yearly'];
+        $now = date('c');
+
+        foreach ($submittedItems as $position => $submitted) {
+            if (! is_array($submitted)) { continue; }
+            $name = trim((string)($submitted['name'] ?? ''));
+            if ($name === '') { throw new InvalidArgumentException('Every service item requires an English name.'); }
+            $schedule = in_array(($submitted['schedule_type'] ?? ''), $allowedSchedules, true) ? (string)$submitted['schedule_type'] : 'one_time';
+            $frequency = in_array(($submitted['frequency'] ?? ''), $allowedFrequencies, true) ? (string)$submitted['frequency'] : null;
+            if ($schedule === 'recurring' && ! $frequency) { throw new InvalidArgumentException($name.' requires a recurring frequency.'); }
+
+            $workItemId = (int)($submitted['id'] ?? 0);
+            $values = [
+                'service_id'=>$serviceId,
+                'name'=>$name,
+                'name_ar'=>trim((string)($submitted['name_ar'] ?? '')) ?: null,
+                'name_he'=>trim((string)($submitted['name_he'] ?? '')) ?: null,
+                'task_description'=>trim((string)($submitted['task_description'] ?? '')) ?: null,
+                'task_description_ar'=>trim((string)($submitted['task_description_ar'] ?? '')) ?: null,
+                'task_description_he'=>trim((string)($submitted['task_description_he'] ?? '')) ?: null,
+                'schedule_type'=>$schedule,
+                'frequency'=>$schedule === 'recurring' ? $frequency : null,
+                'interval_count'=>1,
+                'starts_after_days'=>0,
+                'due_after_days'=>7,
+                'occurrence_count'=>null,
+                'end_after_months'=>null,
+                'estimated_hours'=>0,
+                'sort_order'=>$position + 1,
+                'active'=>1,
+                'updated_at'=>$now,
+            ];
+            if ($workItemId) {
+                if (! $this->db->scalar('SELECT id FROM service_work_items WHERE id=? AND service_id=?', [$workItemId,$serviceId])) { throw new InvalidArgumentException('A service item could not be found.'); }
+                $this->db->update('service_work_items', $workItemId, $values);
+            } else {
+                $values['created_at'] = $now;
+                $workItemId = $this->db->insert('service_work_items', $values);
+            }
+            $keptIds[] = $workItemId;
+
+        }
+
+        foreach ($existingIds as $existingId) {
+            if (! in_array($existingId, $keptIds, true)) { $this->db->execute('DELETE FROM service_work_items WHERE id=? AND service_id=?', [$existingId,$serviceId]); }
+        }
+    }
+
+    private function syncPackageWorkItems(int $packageId, int $serviceId, array $submittedItems): void
+    {
+        $templates = $this->db->all('SELECT * FROM service_work_items WHERE service_id=? AND active=1 ORDER BY sort_order,id', [$serviceId]);
+        $templatesById = [];
+        foreach ($templates as $template) { $templatesById[(int)$template['id']] = $template; }
+        $items = $submittedItems ?: array_map(static fn(array $template): array => [
+            'service_work_item_id'=>$template['id'], 'included'=>0,
+        ], $templates);
+        $seen = [];
+        $now = date('c');
+        foreach ($items as $position => $item) {
+            if (! is_array($item)) { continue; }
+            $workItemId = (int)($item['service_work_item_id'] ?? $item['id'] ?? 0);
+            $template = $templatesById[$workItemId] ?? null;
+            if (! $template) { continue; }
+            $schedule = in_array(($item['schedule_type'] ?? ''), ['one_time','recurring'], true) ? (string)$item['schedule_type'] : (string)$template['schedule_type'];
+            $frequency = in_array(($item['frequency'] ?? ''), ['daily','weekly','monthly','yearly'], true) ? (string)$item['frequency'] : $template['frequency'];
+            $values = [
+                'package_id'=>$packageId,
+                'service_work_item_id'=>$workItemId,
+                'included'=>! empty($item['included']) ? 1 : 0,
+                'name_override'=>$this->differentText($item['name'] ?? null, $template['name']),
+                'name_ar_override'=>$this->differentText($item['name_ar'] ?? null, $template['name_ar']),
+                'name_he_override'=>$this->differentText($item['name_he'] ?? null, $template['name_he']),
+                'description_override'=>$this->differentText($item['task_description'] ?? $item['description'] ?? null, $template['task_description']),
+                'description_ar_override'=>$this->differentText($item['task_description_ar'] ?? $item['description_ar'] ?? null, $template['task_description_ar']),
+                'description_he_override'=>$this->differentText($item['task_description_he'] ?? $item['description_he'] ?? null, $template['task_description_he']),
+                'value_label'=>trim((string)($item['value_label'] ?? '')) ?: null,
+                'value_label_ar'=>trim((string)($item['value_label_ar'] ?? '')) ?: null,
+                'value_label_he'=>trim((string)($item['value_label_he'] ?? '')) ?: null,
+                'schedule_type'=>$schedule !== $template['schedule_type'] ? $schedule : null,
+                'frequency'=>$schedule === 'recurring' && $frequency !== $template['frequency'] ? $frequency : null,
+                'interval_count'=>null,
+                'starts_after_days'=>null,
+                'due_after_days'=>null,
+                'occurrence_count'=>null,
+                'end_after_months'=>null,
+                'estimated_hours'=>null,
+                'sort_order'=>$position + 1,
+                'updated_at'=>$now,
+            ];
+            $ruleId = (int)($this->db->scalar('SELECT id FROM package_service_item_rules WHERE package_id=? AND service_work_item_id=?', [$packageId,$workItemId]) ?: 0);
+            if ($ruleId) { $this->db->update('package_service_item_rules', $ruleId, $values); }
+            else { $values['created_at']=$now; $this->db->insert('package_service_item_rules', $values); }
+            $seen[] = $workItemId;
+        }
+        if ($seen) {
+            $placeholders = implode(',', array_fill(0, count($seen), '?'));
+            $this->db->execute('DELETE FROM package_service_item_rules WHERE package_id=? AND service_work_item_id IN (SELECT id FROM service_work_items WHERE service_id=?) AND service_work_item_id NOT IN ('.$placeholders.')', [$packageId,$serviceId,...$seen]);
+        }
+    }
+
+    private function normalizeQuoteWorkItems(array $submittedItems, int $serviceId, int $packageId): array
+    {
+        $resolved = $this->resolvedWorkItems($serviceId, $packageId);
+        $resolvedById = [];
+        foreach ($resolved as $item) { $resolvedById[(int)$item['id']] = $item; }
+        $items = $submittedItems ?: $resolved;
+        $normalized = [];
+        foreach ($items as $position => $item) {
+            if (! is_array($item)) { continue; }
+            $workItemId = (int)($item['service_work_item_id'] ?? $item['id'] ?? 0);
+            $template = $resolvedById[$workItemId] ?? null;
+            if (! $template) { continue; }
+            $schedule = in_array(($item['schedule_type'] ?? ''), ['one_time','recurring'], true) ? (string)$item['schedule_type'] : (string)$template['schedule_type'];
+            $frequency = in_array(($item['frequency'] ?? ''), ['daily','weekly','monthly','yearly'], true) ? (string)$item['frequency'] : $template['frequency'];
+            $normalized[] = [
+                'service_work_item_id'=>$workItemId,
+                'included'=>array_key_exists('included', $item) ? (! empty($item['included']) ? 1 : 0) : (int)$template['included'],
+                'title'=>trim((string)($item['title'] ?? $item['name'] ?? $template['name'])) ?: $template['name'],
+                'title_ar'=>trim((string)($item['title_ar'] ?? $item['name_ar'] ?? $template['name_ar'])) ?: null,
+                'title_he'=>trim((string)($item['title_he'] ?? $item['name_he'] ?? $template['name_he'])) ?: null,
+                'description'=>trim((string)($item['description'] ?? $item['task_description'] ?? $template['task_description'])) ?: null,
+                'description_ar'=>trim((string)($item['description_ar'] ?? $item['task_description_ar'] ?? $template['task_description_ar'])) ?: null,
+                'description_he'=>trim((string)($item['description_he'] ?? $item['task_description_he'] ?? $template['task_description_he'])) ?: null,
+                'scope_value'=>trim((string)($item['scope_value'] ?? $item['value_label'] ?? $template['value_label'])) ?: null,
+                'scope_value_ar'=>trim((string)($item['scope_value_ar'] ?? $item['value_label_ar'] ?? $template['value_label_ar'])) ?: null,
+                'scope_value_he'=>trim((string)($item['scope_value_he'] ?? $item['value_label_he'] ?? $template['value_label_he'])) ?: null,
+                'schedule_type'=>$schedule,
+                'frequency'=>$schedule === 'recurring' ? ($frequency ?: 'weekly') : null,
+                'interval_count'=>1,
+                'starts_after_days'=>0,
+                'due_after_days'=>7,
+                'occurrence_count'=>null,
+                'end_after_months'=>null,
+                'estimated_hours'=>0,
+                'sort_order'=>$position + 1,
+            ];
+        }
+        return $normalized;
+    }
+
+    private function differentText(mixed $value, mixed $default): ?string
+    {
+        $text = trim((string)$value);
+        return $text !== '' && $text !== trim((string)$default) ? $text : null;
+    }
+
+    private function createDeliveryProjects(array $quote, int $clientId): void
+    {
+        $projectStart = date('Y-m-d');
+        foreach ($quote['items'] as $proposalItem) {
+            $itemType = (string)($proposalItem['item_type'] ?? 'service');
+            if (! in_array($itemType, ['service','support','membership'], true)) { continue; }
+            $existingProject = (int)($this->db->scalar('SELECT id FROM projects WHERE source_proposal_item_id=?', [(int)$proposalItem['id']]) ?: 0);
+            if ($existingProject) { continue; }
+
+            $workItems = $proposalItem['work_items'] ?? [];
+            if (! $workItems) {
+                $catalogHours = ! empty($proposalItem['service_id'])
+                    ? (float)($this->db->scalar('SELECT estimated_hours FROM services WHERE id=?', [(int)$proposalItem['service_id']]) ?: 0)
+                    : 0.0;
+                $taskTitle = match ($itemType) {
+                    'support' => 'Activate '.$proposalItem['title'],
+                    'membership' => 'Start '.$proposalItem['title'],
+                    default => 'Deliver '.$proposalItem['title'],
+                };
+                $workItems = [[
+                    'id'=>null,'title'=>$taskTitle,'description'=>$proposalItem['description'],'scope_value'=>null,
+                    'schedule_type'=>'one_time','frequency'=>null,'interval_count'=>1,'starts_after_days'=>0,'due_after_days'=>14,
+                    'occurrence_count'=>null,'end_after_months'=>null,'estimated_hours'=>$catalogHours,'sort_order'=>1,
+                ]];
+            }
+
+            $estimatedHours = array_sum(array_map(static fn(array $item): float => max(0,(float)($item['estimated_hours'] ?? 0)), $workItems));
+            $projectId = $this->db->insert('projects', [
+                'client_id'=>$clientId,
+                'package_id'=>$quote['package_id'] ?: null,
+                'source_proposal_id'=>(int)$quote['id'],
+                'source_proposal_item_id'=>(int)$proposalItem['id'],
+                'manager_id'=>null,
+                'name'=>$proposalItem['title'].' — '.$quote['business_name'],
+                'project_type'=>$proposalItem['category'] ?: $proposalItem['title'],
+                'start_date'=>$projectStart,
+                'deadline'=>$this->projectDeadline($projectStart, $workItems),
+                'budget'=>max(0,(float)$proposalItem['total']),
+                'estimated_hours'=>$estimatedHours,
+                'actual_hours'=>0,
+                'status'=>'planning',
+                'priority'=>'medium',
+                'notes'=>'Created automatically from accepted quote '.$quote['proposal_number'].'.',
+                'created_at'=>date('c'),
+            ]);
+
+            foreach ($workItems as $workItem) {
+                $occurrence = (new DateTimeImmutable($projectStart))->modify('+'.max(0,(int)($workItem['starts_after_days'] ?? 0)).' days');
+                $description = trim((string)($workItem['description'] ?? ''));
+                $scope = trim((string)($workItem['scope_value'] ?? ''));
+                if ($scope !== '') { $description .= ($description !== '' ? "\n\n" : '').'Package scope: '.$scope; }
+                if (($workItem['schedule_type'] ?? 'one_time') === 'recurring' && ! empty($workItem['frequency'])) {
+                    $description .= ($description !== '' ? "\n\n" : '').'Work pattern: '.ucfirst((string)$workItem['frequency']).' (recurrence automation is not enabled).';
+                }
+                $this->db->insert('project_tasks', [
+                    'project_id'=>$projectId,
+                    'client_id'=>$clientId,
+                    'assigned_employee_id'=>null,
+                    'recurrence_id'=>null,
+                    'proposal_work_item_id'=>! empty($workItem['id']) ? (int)$workItem['id'] : null,
+                    'title'=>$workItem['title'],
+                    'description'=>$description ?: null,
+                    'due_date'=>$occurrence->modify('+'.max(0,(int)($workItem['due_after_days'] ?? 0)).' days')->format('Y-m-d'),
+                    'occurrence_date'=>$occurrence->format('Y-m-d'),
+                    'priority'=>'medium',
+                    'status'=>'todo',
+                    'estimated_hours'=>max(0,(float)($workItem['estimated_hours'] ?? 0)),
+                    'actual_hours'=>0,
+                    'created_at'=>date('c'),
+                ]);
+            }
+
+            $this->db->insert('activities', ['client_id'=>$clientId,'user_id'=>(int)$this->auth->user()['id'],'type'=>'project.created','description'=>'Project created from accepted quote: '.$proposalItem['title'],'entity_type'=>'project','entity_id'=>$projectId,'created_at'=>date('c')]);
+        }
+    }
+
+    private function projectDeadline(string $startDate, array $workItems): ?string
+    {
+        $latest = null;
+        foreach ($workItems as $workItem) {
+            $start = (new DateTimeImmutable($startDate))->modify('+'.max(0,(int)($workItem['starts_after_days'] ?? 0)).' days');
+            $deadline = $start->modify('+'.max(0,(int)($workItem['due_after_days'] ?? 0)).' days');
+            if (! $latest || $deadline > $latest) { $latest = $deadline; }
+        }
+        return $latest?->format('Y-m-d');
     }
 
     private function relationshipIds(array $input, ?array $existing, string $businessName, string $contactName, string $email, float $value, int $score): array

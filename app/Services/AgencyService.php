@@ -21,29 +21,30 @@ final class AgencyService
     {
         $monthStart = date('Y-m-01');
         $monthEnd = date('Y-m-t');
-        $yearStart = date('Y-01-01');
         $today = date('Y-m-d');
-        $weekEnd = date('Y-m-d', strtotime('+7 days'));
+        $clientRows = $this->clients();
+        $monthlyRecurring = array_sum(array_map(static fn(array $client): float => (float) $client['monthly_price'], $clientRows));
 
         return [
             'kpis' => [
-                'mrr' => (float) $this->db->scalar("SELECT COALESCE(SUM(monthly_price),0) FROM subscriptions WHERE status = 'active'"),
-                'revenue_month' => (float) $this->db->scalar('SELECT COALESCE(SUM(amount),0) FROM payments WHERE payment_date BETWEEN ? AND ?', [$monthStart, $monthEnd]),
-                'revenue_year' => (float) $this->db->scalar('SELECT COALESCE(SUM(amount),0) FROM payments WHERE payment_date >= ?', [$yearStart]),
-                'outstanding' => (float) $this->db->scalar("SELECT COALESCE(SUM(total - amount_paid),0) FROM invoices WHERE status NOT IN ('paid','cancelled')"),
-                'pipeline' => (float) $this->db->scalar("SELECT COALESCE(SUM(o.estimated_value),0) FROM opportunities o JOIN pipeline_stages s ON s.id=o.stage_id WHERE s.is_closed=0"),
+                'saved_quotes' => (int) $this->db->scalar('SELECT COUNT(*) FROM proposals WHERE builder_version IS NOT NULL'),
+                'quotes_in_progress' => (int) $this->db->scalar("SELECT COUNT(*) FROM proposals WHERE builder_version IS NOT NULL AND status IN ('draft','sent')"),
+                'accepted_quote_value' => (float) $this->db->scalar("SELECT COALESCE(SUM(total),0) FROM proposals WHERE builder_version IS NOT NULL AND status='accepted'"),
+                'accepted_this_month' => (float) $this->db->scalar("SELECT COALESCE(SUM(total),0) FROM proposals WHERE builder_version IS NOT NULL AND status='accepted' AND SUBSTRING(COALESCE(updated_at,created_at),1,10) BETWEEN ? AND ?", [$monthStart, $monthEnd]),
                 'active_clients' => (int) $this->db->scalar("SELECT COUNT(*) FROM clients WHERE status='active'"),
-                'open_projects' => (int) $this->db->scalar("SELECT COUNT(*) FROM projects WHERE status NOT IN ('completed','cancelled')"),
+                'monthly_recurring' => $monthlyRecurring,
+                'active_projects' => (int) $this->db->scalar("SELECT COUNT(*) FROM projects WHERE status NOT IN ('completed','cancelled')"),
+                'open_tasks' => (int) $this->db->scalar("SELECT COUNT(*) FROM project_tasks WHERE status != 'completed'"),
                 'overdue_tasks' => (int) $this->db->scalar("SELECT COUNT(*) FROM project_tasks WHERE due_date < ? AND status != 'completed'", [$today]),
-                'overdue_lead_followups' => (int) $this->db->scalar("SELECT COUNT(*) FROM leads WHERE converted_client_id IS NULL AND status!='lost' AND next_follow_up_at IS NOT NULL AND next_follow_up_at < NOW()"),
+                'completed_tasks_month' => (int) $this->db->scalar("SELECT COUNT(*) FROM project_tasks WHERE status='completed' AND SUBSTRING(completed_at,1,10) BETWEEN ? AND ?", [$monthStart, $monthEnd]),
             ],
-            'pipeline_stages' => $this->db->all("SELECT s.name, s.color, COUNT(o.id) AS deals, COALESCE(SUM(o.estimated_value),0) AS value FROM pipeline_stages s LEFT JOIN opportunities o ON o.stage_id=s.id WHERE s.is_closed=0 GROUP BY s.id ORDER BY s.position"),
-            'revenue_by_client' => $this->db->all("SELECT b.name, COALESCE(SUM(p.amount),0) AS value FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN invoices i ON i.client_id=c.id LEFT JOIN payments p ON p.invoice_id=i.id GROUP BY c.id ORDER BY value DESC LIMIT 6"),
-            'tasks' => $this->db->all("SELECT t.*, e.name AS assignee, b.name AS business_name FROM project_tasks t JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=t.assigned_employee_id WHERE t.status != 'completed' ORDER BY CASE t.priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 ELSE 3 END, t.due_date LIMIT 7"),
-            'visits' => $this->db->all("SELECT v.*, b.name AS business_name, e.name AS assignee FROM content_visits v JOIN clients c ON c.id=v.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=v.assigned_employee_id WHERE v.visit_date BETWEEN ? AND ? AND v.status NOT IN ('cancelled','completed') ORDER BY v.visit_date LIMIT 6", [$today, $weekEnd]),
-            'renewals' => $this->db->all("SELECT s.*, b.name AS business_name, p.name AS package_name, DATEDIFF(s.renewal_date, ?) AS days_left FROM subscriptions s JOIN clients c ON c.id=s.client_id JOIN businesses b ON b.id=c.business_id JOIN packages p ON p.id=s.package_id WHERE s.status='active' AND s.renewal_date BETWEEN ? AND DATE_ADD(?, INTERVAL 45 DAY) ORDER BY s.renewal_date", [$today, $today, $today]),
-            'notifications' => $this->db->all('SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 5', [$this->auth->user()['id']]),
-            'lead_followup_reminders' => $this->db->all("SELECT l.id,l.company_name,l.next_follow_up_at,l.lead_score,e.name AS owner_name,CASE WHEN l.next_follow_up_at<NOW() THEN 'overdue' ELSE 'today' END AS reminder_state FROM leads l LEFT JOIN employees e ON e.id=l.assigned_employee_id WHERE l.converted_client_id IS NULL AND l.status!='lost' AND l.next_follow_up_at IS NOT NULL AND l.next_follow_up_at<=DATE_ADD(NOW(),INTERVAL 1 DAY) ORDER BY l.next_follow_up_at LIMIT 8"),
+            'quote_statuses' => $this->db->all("SELECT status, COUNT(*) AS quote_count, COALESCE(SUM(total),0) AS quote_value FROM proposals WHERE builder_version IS NOT NULL GROUP BY status ORDER BY CASE status WHEN 'draft' THEN 1 WHEN 'sent' THEN 2 WHEN 'accepted' THEN 3 ELSE 4 END"),
+            'recent_quotes' => $this->db->all("SELECT q.id,q.proposal_number,q.status,q.total,q.updated_at,q.created_at,COALESCE(NULLIF(q.business_name,''),b.name,'Prospect') AS business_name,COALESCE(p.name,q.selected_tier,'Custom') AS package_name FROM proposals q LEFT JOIN clients c ON c.id=q.client_id LEFT JOIN businesses b ON b.id=c.business_id LEFT JOIN packages p ON p.id=q.package_id WHERE q.builder_version IS NOT NULL ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 6"),
+            'project_delivery' => $this->db->all("SELECT p.id,p.name,p.status,b.name AS business_name,COUNT(t.id) AS task_count,SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks,SUM(CASE WHEN t.status!='completed' THEN 1 ELSE 0 END) AS open_tasks FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN project_tasks t ON t.project_id=p.id GROUP BY p.id,p.name,p.status,b.name ORDER BY CASE WHEN p.status IN ('completed','cancelled') THEN 1 ELSE 0 END,p.id DESC LIMIT 6"),
+            'task_statuses' => $this->db->all("SELECT status,COUNT(*) AS task_count FROM project_tasks GROUP BY status ORDER BY CASE status WHEN 'todo' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'review' THEN 3 WHEN 'completed' THEN 4 ELSE 5 END"),
+            'overdue_tasks' => $this->db->all("SELECT t.id,t.title,t.due_date,t.priority,b.name AS business_name,p.name AS project_name,e.name AS assignee FROM project_tasks t JOIN projects p ON p.id=t.project_id JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=t.assigned_employee_id WHERE t.status!='completed' AND t.due_date IS NOT NULL AND t.due_date<? ORDER BY t.due_date,t.id LIMIT 6", [$today]),
+            'awaiting_quotes' => $this->db->all("SELECT q.id,q.proposal_number,q.status,q.total,COALESCE(NULLIF(q.business_name,''),b.name,'Prospect') AS business_name FROM proposals q LEFT JOIN clients c ON c.id=q.client_id LEFT JOIN businesses b ON b.id=c.business_id WHERE q.builder_version IS NOT NULL AND q.status IN ('draft','sent') ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 6"),
+            'recent_activity' => $this->db->all("SELECT a.action,a.entity_type,a.entity_id,a.created_at,u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity_type IN ('proposal','client','project','task') ORDER BY a.created_at DESC,a.id DESC LIMIT 8"),
         ];
     }
 
@@ -92,20 +93,40 @@ final class AgencyService
         return $rows;
     }
 
-    public function clients(): array
+    public function clients(array $filters = []): array
     {
-        return $this->db->all("SELECT c.*, b.name AS business_name, b.industry,
+        $base = "SELECT c.*, b.name AS business_name, b.industry,
             COALESCE(
-                (SELECT s.monthly_price FROM subscriptions s WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
-                (SELECT q.membership_monthly_price FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1),
+                (SELECT NULLIF(s.monthly_price,0) FROM subscriptions s WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
+                (SELECT NULLIF(q.membership_monthly_price,0) FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1),
+                (SELECT CASE WHEN q.membership_duration_months > 0 THEN q.membership_amount / q.membership_duration_months END FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1),
                 0
             ) AS monthly_price,
             COALESCE(
                 (SELECT p.name FROM subscriptions s JOIN packages p ON p.id=s.package_id WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
                 (SELECT qp.name FROM proposals q LEFT JOIN packages qp ON qp.id=q.package_id WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1)
             ) AS package_name,
-            COALESCE((SELECT SUM(i.total-i.amount_paid) FROM invoices i WHERE i.client_id=c.id AND i.status NOT IN ('paid','cancelled')),0) AS outstanding
-            FROM clients c JOIN businesses b ON b.id=c.business_id ORDER BY b.name");
+            COALESCE(
+                (SELECT s.package_id FROM subscriptions s WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
+                (SELECT q.package_id FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1)
+            ) AS selected_package_id,
+            COALESCE(
+                (SELECT q.total FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1),
+                0
+            ) AS accepted_quote_value
+            FROM clients c JOIN businesses b ON b.id=c.business_id";
+        $where = [];
+        $parameters = [];
+        if (($query = trim((string)($filters['q'] ?? ''))) !== '') {
+            $where[] = '(client_rows.business_name LIKE ? OR client_rows.name LIKE ? OR client_rows.email LIKE ? OR client_rows.phone LIKE ?)';
+            array_push($parameters, ...array_fill(0, 4, '%'.$query.'%'));
+        }
+        if (($packageId = $this->nullableInt($filters['package_id'] ?? null))) { $where[]='client_rows.selected_package_id=?'; $parameters[]=$packageId; }
+        if (($status = trim((string)($filters['status'] ?? ''))) !== '') { $where[]='client_rows.status=?'; $parameters[]=$status; }
+        if (($minimum = trim((string)($filters['min_monthly'] ?? ''))) !== '') { $where[]='client_rows.monthly_price>=?'; $parameters[]=$this->nonNegative($minimum); }
+        if (($maximum = trim((string)($filters['max_monthly'] ?? ''))) !== '') { $where[]='client_rows.monthly_price<=?'; $parameters[]=$this->nonNegative($maximum); }
+        $whereSql = $where ? ' WHERE '.implode(' AND ', $where) : '';
+        return $this->db->all("SELECT * FROM ({$base}) client_rows{$whereSql} ORDER BY client_rows.business_name", $parameters);
     }
 
     public function client(int $id): ?array
@@ -198,14 +219,29 @@ final class AgencyService
         return $packages;
     }
 
-    public function projects(): array
+    public function projects(array $filters = []): array
     {
-        return $this->db->all("SELECT p.*, b.name AS business_name, e.name AS manager_name, COUNT(t.id) AS task_count, SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=p.manager_id LEFT JOIN project_tasks t ON t.project_id=p.id GROUP BY p.id ORDER BY p.deadline");
+        $where = [];
+        $parameters = [];
+        if (($clientId = $this->nullableInt($filters['client_id'] ?? null))) { $where[]='p.client_id=?'; $parameters[]=$clientId; }
+        if (($type = trim((string)($filters['project_type'] ?? ''))) !== '') { $where[]='p.project_type=?'; $parameters[]=$type; }
+        if (($status = trim((string)($filters['status'] ?? ''))) !== '') { $where[]='p.status=?'; $parameters[]=$status; }
+        $whereSql = $where ? ' WHERE '.implode(' AND ', $where) : '';
+        return $this->db->all("SELECT p.*, b.name AS business_name, e.name AS manager_name, COUNT(t.id) AS task_count, SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=p.manager_id LEFT JOIN project_tasks t ON t.project_id=p.id{$whereSql} GROUP BY p.id ORDER BY p.start_date DESC,p.id DESC", $parameters);
     }
 
-    public function tasks(): array
+    public function tasks(array $filters = []): array
     {
-        return $this->db->all("SELECT t.*, b.name AS business_name, p.name AS project_name, e.name AS assignee FROM project_tasks t JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id JOIN projects p ON p.id=t.project_id LEFT JOIN employees e ON e.id=t.assigned_employee_id ORDER BY CASE t.status WHEN 'in_progress' THEN 1 WHEN 'review' THEN 2 WHEN 'todo' THEN 3 ELSE 4 END, t.due_date");
+        $where = [];
+        $parameters = [];
+        if (($projectId = $this->nullableInt($filters['project_id'] ?? null))) { $where[]='t.project_id=?'; $parameters[]=$projectId; }
+        if (($assigneeId = $this->nullableInt($filters['assigned_employee_id'] ?? null))) { $where[]='t.assigned_employee_id=?'; $parameters[]=$assigneeId; }
+        if (($status = trim((string)($filters['status'] ?? ''))) !== '') { $where[]='t.status=?'; $parameters[]=$status; }
+        $whereSql = $where ? ' WHERE '.implode(' AND ', $where) : '';
+        $rows = $this->db->all("SELECT t.*, b.name AS business_name, p.name AS project_name, e.name AS assignee FROM project_tasks t JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id JOIN projects p ON p.id=t.project_id LEFT JOIN employees e ON e.id=t.assigned_employee_id{$whereSql} ORDER BY CASE t.status WHEN 'in_progress' THEN 1 WHEN 'review' THEN 2 WHEN 'todo' THEN 3 ELSE 4 END, t.due_date,t.id", $parameters);
+        foreach ($rows as &$row) { $row['history'] = $this->taskHistory((int)$row['id']); }
+        unset($row);
+        return $rows;
     }
 
     public function visits(): array
@@ -264,11 +300,41 @@ final class AgencyService
 
     public function reports(): array
     {
+        $clients = $this->clients();
+        $clientDelivery = $this->db->all("SELECT c.id,COUNT(DISTINCT p.id) AS project_count,SUM(CASE WHEN t.id IS NOT NULL AND t.status!='completed' THEN 1 ELSE 0 END) AS open_tasks,SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks FROM clients c LEFT JOIN projects p ON p.client_id=c.id LEFT JOIN project_tasks t ON t.project_id=p.id GROUP BY c.id");
+        $deliveryByClient = [];
+        foreach ($clientDelivery as $delivery) {
+            $deliveryByClient[(int) $delivery['id']] = $delivery;
+        }
+        foreach ($clients as &$client) {
+            $delivery = $deliveryByClient[(int) $client['id']] ?? ['project_count'=>0,'open_tasks'=>0,'completed_tasks'=>0];
+            $client['project_count'] = (int) $delivery['project_count'];
+            $client['open_tasks'] = (int) $delivery['open_tasks'];
+            $client['completed_tasks'] = (int) $delivery['completed_tasks'];
+        }
+        unset($client);
+
+        $totalQuotes = (int) $this->db->scalar('SELECT COUNT(*) FROM proposals WHERE builder_version IS NOT NULL');
+        $acceptedQuotes = (int) $this->db->scalar("SELECT COUNT(*) FROM proposals WHERE builder_version IS NOT NULL AND status='accepted'");
+
         return [
-            'sales' => $this->db->all("SELECT s.name AS stage, COUNT(o.id) AS deals, COALESCE(SUM(o.estimated_value),0) AS value, COALESCE(SUM(o.estimated_value*o.probability/100),0) AS weighted FROM pipeline_stages s LEFT JOIN opportunities o ON o.stage_id=s.id GROUP BY s.id ORDER BY s.position"),
-            'clients' => $this->db->all("SELECT b.name, p.name AS package_name, s.monthly_price, c.health, COALESCE(SUM(i.total),0) AS invoiced, COALESCE(SUM(i.amount_paid),0) AS collected FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN subscriptions s ON s.client_id=c.id AND s.status='active' LEFT JOIN packages p ON p.id=s.package_id LEFT JOIN invoices i ON i.client_id=c.id GROUP BY c.id ORDER BY invoiced DESC"),
-            'profitability' => $this->db->all("SELECT p.name AS project_name, b.name AS business_name, p.budget AS revenue, COALESCE(SUM(te.hours*e.hourly_cost),0) AS actual_cost, p.budget-COALESCE(SUM(te.hours*e.hourly_cost),0) AS gross_profit, CASE WHEN p.budget>0 THEN ((p.budget-COALESCE(SUM(te.hours*e.hourly_cost),0))/p.budget*100) ELSE 0 END AS margin FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN time_entries te ON te.project_id=p.id LEFT JOIN employees e ON e.id=te.employee_id GROUP BY p.id ORDER BY margin DESC"),
-            'team' => $this->db->all("SELECT e.name, e.department, COALESCE(SUM(te.hours),0) AS hours, COALESCE(SUM(te.hours*e.hourly_cost),0) AS internal_cost, COUNT(DISTINCT CASE WHEN t.status!='completed' THEN t.id END) AS open_tasks FROM employees e LEFT JOIN time_entries te ON te.employee_id=e.id AND te.entry_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) LEFT JOIN project_tasks t ON t.assigned_employee_id=e.id GROUP BY e.id ORDER BY hours DESC"),
+            'summary' => [
+                'total_quotes' => $totalQuotes,
+                'accepted_quotes' => $acceptedQuotes,
+                'acceptance_rate' => $totalQuotes > 0 ? ($acceptedQuotes / $totalQuotes) * 100 : 0,
+                'accepted_quote_value' => array_sum(array_map(static fn(array $client): float => (float) $client['accepted_quote_value'], $clients)),
+                'monthly_recurring' => array_sum(array_map(static fn(array $client): float => (float) $client['monthly_price'], $clients)),
+                'active_clients' => (int) $this->db->scalar("SELECT COUNT(*) FROM clients WHERE status='active'"),
+                'active_projects' => (int) $this->db->scalar("SELECT COUNT(*) FROM projects WHERE status NOT IN ('completed','cancelled')"),
+                'open_tasks' => (int) $this->db->scalar("SELECT COUNT(*) FROM project_tasks WHERE status!='completed'"),
+                'overdue_tasks' => (int) $this->db->scalar("SELECT COUNT(*) FROM project_tasks WHERE status!='completed' AND due_date IS NOT NULL AND due_date<CURDATE()"),
+            ],
+            'quote_statuses' => $this->db->all("SELECT status,COUNT(*) AS quote_count,COALESCE(SUM(total),0) AS quote_value FROM proposals WHERE builder_version IS NOT NULL GROUP BY status ORDER BY CASE status WHEN 'draft' THEN 1 WHEN 'sent' THEN 2 WHEN 'accepted' THEN 3 ELSE 4 END"),
+            'packages' => $this->db->all("SELECT COALESCE(p.name,q.selected_tier,'Custom') AS package_name,COUNT(q.id) AS quote_count,SUM(CASE WHEN q.status='accepted' THEN 1 ELSE 0 END) AS accepted_count,COALESCE(SUM(CASE WHEN q.status='accepted' THEN q.total ELSE 0 END),0) AS accepted_value,COALESCE(SUM(CASE WHEN q.status='accepted' THEN q.membership_monthly_price ELSE 0 END),0) AS monthly_recurring FROM proposals q LEFT JOIN packages p ON p.id=q.package_id WHERE q.builder_version IS NOT NULL GROUP BY COALESCE(p.name,q.selected_tier,'Custom') ORDER BY accepted_value DESC,quote_count DESC"),
+            'clients' => $clients,
+            'projects' => $this->db->all("SELECT p.id,p.name AS project_name,p.status,b.name AS business_name,COUNT(t.id) AS task_count,SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks,SUM(CASE WHEN t.status!='completed' THEN 1 ELSE 0 END) AS open_tasks FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN project_tasks t ON t.project_id=p.id GROUP BY p.id,p.name,p.status,b.name ORDER BY CASE WHEN p.status IN ('completed','cancelled') THEN 1 ELSE 0 END,p.id DESC"),
+            'task_statuses' => $this->db->all("SELECT status,COUNT(*) AS task_count FROM project_tasks GROUP BY status ORDER BY CASE status WHEN 'todo' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'review' THEN 3 WHEN 'completed' THEN 4 ELSE 5 END"),
+            'assignees' => $this->db->all("SELECT e.id,e.name,e.department,SUM(CASE WHEN t.status!='completed' THEN 1 ELSE 0 END) AS open_tasks,SUM(CASE WHEN t.status!='completed' AND t.due_date IS NOT NULL AND t.due_date<CURDATE() THEN 1 ELSE 0 END) AS overdue_tasks,SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks FROM employees e LEFT JOIN project_tasks t ON t.assigned_employee_id=e.id WHERE e.status='active' GROUP BY e.id,e.name,e.department HAVING open_tasks>0 OR completed_tasks>0 ORDER BY open_tasks DESC,e.name"),
         ];
     }
 
@@ -686,7 +752,7 @@ final class AgencyService
     public function createProject(array $input): int
     {
         $this->required($input, ['client_id','name','project_type','start_date']);
-        $id = $this->db->insert('projects', ['client_id'=>(int)$input['client_id'],'package_id'=>$this->nullableInt($input['package_id'] ?? null),'manager_id'=>$this->nullableInt($input['manager_id'] ?? null),'name'=>trim($input['name']),'project_type'=>$input['project_type'],'start_date'=>$input['start_date'],'deadline'=>$input['deadline'] ?: null,'budget'=>$this->nonNegative($input['budget'] ?? 0),'estimated_hours'=>$this->nonNegative($input['estimated_hours'] ?? 0),'actual_hours'=>0,'status'=>'planning','priority'=>$input['priority'] ?? 'medium','notes'=>trim($input['notes'] ?? ''),'created_at'=>date('c')]);
+        $id = $this->db->insert('projects', ['client_id'=>(int)$input['client_id'],'package_id'=>$this->nullableInt($input['package_id'] ?? null),'manager_id'=>$this->nullableInt($input['manager_id'] ?? null),'name'=>trim($input['name']),'project_type'=>$input['project_type'],'start_date'=>$input['start_date'],'deadline'=>($input['deadline'] ?? '') ?: null,'budget'=>$this->nonNegative($input['budget'] ?? 0),'estimated_hours'=>$this->nonNegative($input['estimated_hours'] ?? 0),'actual_hours'=>0,'status'=>'planning','priority'=>$input['priority'] ?? 'medium','notes'=>trim($input['notes'] ?? ''),'created_at'=>date('c')]);
         $this->activity((int)$input['client_id'],'project.created','Project created: '.trim($input['name']),'project',$id);
         $this->audit('created','project',$id,null,$input);
         return $id;
@@ -703,6 +769,101 @@ final class AgencyService
         $this->activity((int)$project['client_id'],'task.created','Task created: '.trim($input['title']),'task',$id);
         $this->audit('created','task',$id,null,$input);
         return $id;
+    }
+
+    public function duplicateTask(int $taskId): int
+    {
+        $source = $this->db->first('SELECT * FROM project_tasks WHERE id=?', [$taskId]);
+        if (! $source) { throw new InvalidArgumentException('The task could not be found.'); }
+        $copyId = $this->db->insert('project_tasks', [
+            'project_id'=>(int)$source['project_id'], 'client_id'=>(int)$source['client_id'],
+            'assigned_employee_id'=>$this->nullableInt($source['assigned_employee_id'] ?? null),
+            'title'=>trim((string)$source['title']).' (Copy)', 'description'=>$source['description'] ?: null,
+            'due_date'=>$source['due_date'] ?: null, 'priority'=>$source['priority'] ?: 'medium',
+            'status'=>'todo', 'estimated_hours'=>$this->nonNegative($source['estimated_hours'] ?? 0),
+            'actual_hours'=>0, 'completed_at'=>null, 'created_at'=>date('c'),
+        ]);
+        $this->activity((int)$source['client_id'], 'task.duplicated', 'Task duplicated: '.trim((string)$source['title']), 'task', $copyId);
+        $this->audit('duplicated_from', 'task', $copyId, null, ['source_task_id'=>$taskId]);
+        $this->audit('duplicated', 'task', $taskId, null, ['new_task_id'=>$copyId]);
+        return $copyId;
+    }
+
+    public function addTaskNote(int $taskId, string $note): void
+    {
+        $note = trim($note);
+        if ($note === '') { throw new InvalidArgumentException('Write a note before saving.'); }
+        $task = $this->db->first('SELECT id,client_id,title FROM project_tasks WHERE id=?', [$taskId]);
+        if (! $task) { throw new InvalidArgumentException('The task could not be found.'); }
+        $this->audit('note_added', 'task', $taskId, null, ['note'=>$note]);
+        $this->activity((int)$task['client_id'], 'task.note_added', 'Note added to task: '.$task['title'], 'task', $taskId);
+    }
+
+    public function deleteTask(int $taskId): void
+    {
+        if (($this->auth->user()['role_slug'] ?? '') !== 'super_admin') { throw new InvalidArgumentException('Only the Super Admin can delete tasks.'); }
+        $task = $this->db->first('SELECT * FROM project_tasks WHERE id=?', [$taskId]);
+        if (! $task) { throw new InvalidArgumentException('The task could not be found.'); }
+        if ((int)$this->db->scalar('SELECT COUNT(*) FROM time_entries WHERE task_id=?', [$taskId]) > 0) {
+            throw new InvalidArgumentException('This task has logged time and cannot be deleted. Keep it for the audit record or mark it completed.');
+        }
+        $this->db->transaction(function () use ($taskId, $task): void {
+            $this->audit('deleted', 'task', $taskId, $task, ['title'=>$task['title']]);
+            $this->db->execute('DELETE FROM project_tasks WHERE id=?', [$taskId]);
+        });
+    }
+
+    public function taskHistory(int $taskId): array
+    {
+        $rows = $this->db->all("SELECT a.*,u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity_type='task' AND a.entity_id=? ORDER BY a.created_at DESC,a.id DESC", [$taskId]);
+        foreach ($rows as &$row) {
+            $old = json_decode((string)($row['old_values'] ?? ''), true) ?: [];
+            $new = json_decode((string)($row['new_values'] ?? ''), true) ?: [];
+            $row['summary'] = match ($row['action']) {
+                'note_added' => (string)($new['note'] ?? 'Note added.'),
+                'status_changed' => 'Status changed from '.ucwords(str_replace('_',' ',(string)($old['status'] ?? 'unknown'))).' to '.ucwords(str_replace('_',' ',(string)($new['status'] ?? 'unknown'))).'.',
+                'duplicated' => 'Task duplicated as task #'.(int)($new['new_task_id'] ?? 0).'.',
+                'duplicated_from' => 'Created as a duplicate of task #'.(int)($new['source_task_id'] ?? 0).'.',
+                'updated' => 'Task details updated.',
+                'created' => 'Task created.',
+                default => ucwords(str_replace('_',' ',(string)$row['action'])).'.',
+            };
+        }
+        unset($row);
+        return $rows;
+    }
+
+    public function updateProject(array $input): void
+    {
+        if (($this->auth->user()['role_slug'] ?? '') !== 'super_admin') { throw new InvalidArgumentException('Only the Super Admin can edit projects.'); }
+        $this->required($input, ['project_id','client_id','name','project_type','start_date','status']);
+        $projectId = (int)$input['project_id'];
+        $before = $this->db->first('SELECT * FROM projects WHERE id=?', [$projectId]);
+        if (! $before || ! $this->db->scalar("SELECT id FROM clients WHERE id=? AND status='active'", [(int)$input['client_id']])) { throw new InvalidArgumentException('Select a valid project and client.'); }
+        $status = (string)$input['status'];
+        if (! in_array($status, ['planning','active','on_hold','completed','cancelled'], true)) { throw new InvalidArgumentException('Select a valid project status.'); }
+        $after = ['client_id'=>(int)$input['client_id'],'name'=>trim((string)$input['name']),'project_type'=>(string)$input['project_type'],'start_date'=>(string)$input['start_date'],'status'=>$status,'notes'=>trim((string)($input['notes'] ?? '')) ?: null];
+        $this->db->transaction(function () use ($projectId, $before, $after): void {
+            $this->db->update('projects', $projectId, $after);
+            if ((int)$before['client_id'] !== (int)$after['client_id']) { $this->db->execute('UPDATE project_tasks SET client_id=? WHERE project_id=?', [(int)$after['client_id'],$projectId]); }
+            $this->audit('updated','project',$projectId,$before,array_merge($before,$after));
+        });
+    }
+
+    public function updateTask(array $input): void
+    {
+        if (($this->auth->user()['role_slug'] ?? '') !== 'super_admin') { throw new InvalidArgumentException('Only the Super Admin can edit tasks.'); }
+        $this->required($input, ['task_id','project_id','title','status','priority']);
+        $taskId = (int)$input['task_id'];
+        $before = $this->db->first('SELECT * FROM project_tasks WHERE id=?', [$taskId]);
+        $project = $this->db->first('SELECT id,client_id FROM projects WHERE id=?', [(int)$input['project_id']]);
+        if (! $before || ! $project) { throw new InvalidArgumentException('Select a valid task and project.'); }
+        $status = (string)$input['status'];
+        $priority = (string)$input['priority'];
+        if (! in_array($status, ['todo','in_progress','waiting','review','completed'], true) || ! in_array($priority, ['low','medium','high','urgent'], true)) { throw new InvalidArgumentException('Select a valid task status and priority.'); }
+        $after = ['project_id'=>(int)$project['id'],'client_id'=>(int)$project['client_id'],'assigned_employee_id'=>$this->nullableInt($input['assigned_employee_id'] ?? null),'title'=>trim((string)$input['title']),'description'=>trim((string)($input['description'] ?? '')) ?: null,'due_date'=>($input['due_date'] ?? '') ?: null,'priority'=>$priority,'status'=>$status,'completed_at'=>$status==='completed' ? ($before['completed_at'] ?: date('c')) : null];
+        $this->db->update('project_tasks', $taskId, $after);
+        $this->audit('updated','task',$taskId,$before,array_merge($before,$after));
     }
 
     public function createVisit(array $input): int

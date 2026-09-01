@@ -153,7 +153,7 @@ class AgencySystemTest extends TestCase
         $this->get('/lead?id='.$leadId)->assertOk()->assertSee('Corrected campaign requirements')->assertSee('Correct');
         $this->get('/leads?status=contacted&min_fit_score=70&follow_up_state=overdue')
             ->assertOk()->assertSee('Laravel Qualified Lead')->assertSee('Overdue');
-        $this->get('/dashboard')->assertOk()->assertSee('Lead follow-up reminders')->assertSee('Laravel Qualified Lead');
+        $this->get('/dashboard')->assertOk()->assertSee('QUOTE TO DELIVERY')->assertSee('Project delivery')->assertSee('Task flow');
 
         $this->get('/discovery?lead_id='.$leadId)
             ->assertOk()
@@ -261,7 +261,7 @@ class AgencySystemTest extends TestCase
         $navigation = app(\App\Services\Auth::class)->navigationItems();
 
         $this->assertSame(
-            ['Command Center', 'Quote & Onboarding', 'Project Delivery', 'Content & Marketing', 'Operations & Finance', 'Settings'],
+            ['Command Center', 'Quote & Onboarding', 'Project Delivery', 'Operations & Finance', 'Settings'],
             array_column($navigation, 'label')
         );
 
@@ -273,8 +273,8 @@ class AgencySystemTest extends TestCase
         }
 
         $this->assertSame(['New Quote', 'Saved Quotes', 'Clients', 'Quote Settings'], $groups['Quote & Onboarding']);
-        $this->assertSame(['Projects', 'Tasks', 'Time Tracking'], $groups['Project Delivery']);
-        $this->assertSame(['Content Visits', 'Content Calendar', 'Media Library'], $groups['Content & Marketing']);
+        $this->assertSame(['Projects', 'Tasks'], $groups['Project Delivery']);
+        $this->assertArrayNotHasKey('Content & Marketing', $groups);
         $this->assertSame(['Agency Calendar', 'Invoices', 'Reports'], $groups['Operations & Finance']);
         $this->assertSame(['Team', 'System Settings', 'Audit Log'], $groups['Settings']);
 
@@ -433,6 +433,122 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseMissing('package_items',['id'=>$item->id]);
     }
 
+    public function test_service_items_flow_through_package_quote_and_onboarding_as_ordinary_tasks(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $package = DB::table('packages')->where('package_type', 'quote_setup')->where('tier', 'basic')->first();
+        $packageItem = DB::table('package_items')->where('package_id', $package->id)->where('included', 1)->orderBy('sort_order')->first();
+        $service = DB::table('services')->where('id', $packageItem->service_id)->first();
+
+        $this->post('/quote_settings', [
+            'action'=>'save_quote_service', 'service_id'=>$service->id, 'category_id'=>$service->category_id,
+            'name'=>$service->name, 'name_ar'=>$service->name_ar, 'name_he'=>$service->name_he,
+            'description'=>$service->description, 'description_ar'=>$service->description_ar, 'description_he'=>$service->description_he,
+            'pricing_type'=>$service->pricing_type, 'default_price'=>$service->default_price,
+            'cost_estimate'=>$service->cost_estimate, 'estimated_hours'=>$service->estimated_hours,
+            'quote_sort'=>$service->quote_sort, 'taxable'=>1, 'active'=>1, 'quote_enabled'=>1,
+            'work_items_present'=>1,
+            'work_items'=>[[
+                'name'=>'Campaign Optimization', 'name_ar'=>'تحسين الحملة', 'name_he'=>'אופטימיזציית קמפיין',
+                'task_description'=>'Master service instructions.', 'schedule_type'=>'recurring', 'frequency'=>'weekly',
+            ]],
+        ])->assertRedirect('/quote_settings')->assertSessionHas('success');
+
+        $workItem = DB::table('service_work_items')->where('service_id', $service->id)->where('name', 'Campaign Optimization')->first();
+        $this->assertNotNull($workItem);
+        $this->assertSame(1, (int)$workItem->interval_count);
+        $this->assertNull($workItem->occurrence_count);
+        $this->assertDatabaseMissing('package_service_item_rules', [
+            'package_id'=>$package->id, 'service_work_item_id'=>$workItem->id,
+        ]);
+        $unselectedPackage = collect(app(\App\Services\QuoteStudioService::class)->builderData()['packages'])->firstWhere('id', $package->id);
+        $unselectedService = collect($unselectedPackage['items'])->firstWhere('service_id', $service->id);
+        $unselectedWorkItem = collect($unselectedService['work_items'])->firstWhere('id', $workItem->id);
+        $this->assertSame(0, (int)$unselectedWorkItem['included']);
+        $this->get('/quote_settings')->assertOk()
+            ->assertSee('Service item templates')->assertSee('Package service items')
+            ->assertSee('Add to this package')
+            ->assertDontSee('Every N periods')->assertDontSee('Starts after (days)')
+            ->assertDontSee('Occurrences')->assertDontSee('End after months');
+
+        $this->post('/quote_settings', [
+            'action'=>'save_quote_package_item', 'package_item_id'=>$packageItem->id,
+            'unit_price'=>$packageItem->unit_price, 'sort_order'=>$packageItem->sort_order,
+            'description'=>$packageItem->description, 'description_ar'=>$packageItem->description_ar,
+            'description_he'=>$packageItem->description_he, 'included'=>1, 'work_items_present'=>1,
+            'work_items'=>[[
+                'service_work_item_id'=>$workItem->id, 'included'=>1,
+                'name'=>'Basic Campaign Check', 'task_description'=>'Instructions customised for the Basic package.',
+                'value_label'=>'1 optimization each week', 'schedule_type'=>'recurring', 'frequency'=>'weekly',
+            ]],
+        ])->assertRedirect('/quote_settings')->assertSessionHas('success');
+
+        $this->assertDatabaseHas('package_service_item_rules', [
+            'package_id'=>$package->id, 'service_work_item_id'=>$workItem->id, 'included'=>1,
+            'name_override'=>'Basic Campaign Check', 'description_override'=>'Instructions customised for the Basic package.',
+            'value_label'=>'1 optimization each week',
+        ]);
+        $builderPackage = collect(app(\App\Services\QuoteStudioService::class)->builderData()['packages'])->firstWhere('id', $package->id);
+        $builderService = collect($builderPackage['items'])->firstWhere('service_id', $service->id);
+        $selectedWorkItem = collect($builderService['work_items'])->firstWhere('id', $workItem->id);
+        $this->assertSame(1, (int)$selectedWorkItem['included']);
+        $this->assertSame('Basic Campaign Check', $selectedWorkItem['name']);
+
+        $answers = [];
+        foreach (config('quote_studio.assessment') as $question) { $answers[$question['key']] = $question['options'][0]['value']; }
+        $this->post('/quote_studio', [
+            'action'=>'save_quote', 'business_name'=>'Final Scope Client', 'contact_name'=>'Workflow Tester',
+            'contact_email'=>'workflow@example.test', 'business_stage'=>'existing_business', 'years_operating'=>2,
+            'locale'=>'en', 'assessment_json'=>json_encode($answers), 'selected_tier'=>'basic',
+            'items_json'=>json_encode([[
+                'service_id'=>$service->id, 'list_price'=>(float)$packageItem->unit_price,
+                'discount_percent'=>0, 'custom_price'=>null, 'description'=>$packageItem->description,
+                'description_ar'=>$packageItem->description_ar, 'description_he'=>$packageItem->description_he,
+                'work_items'=>[[
+                    'service_work_item_id'=>$workItem->id, 'included'=>1,
+                    'title'=>'Client Final Campaign Task', 'description'=>'Final instructions agreed in the quote.',
+                    'scope_value'=>'2 manual campaign checks', 'schedule_type'=>'recurring', 'frequency'=>'weekly',
+                ]],
+            ]]),
+            'support_plan'=>'3_months', 'membership_plan'=>'growth', 'membership_term'=>3,
+            'tax_percent'=>13, 'validity_days'=>7,
+        ])->assertSessionHas('success');
+
+        $quote = DB::table('proposals')->where('business_name', 'Final Scope Client')->first();
+        $proposalItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('service_id', $service->id)->first();
+        $supportItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'support')->first();
+        $membershipItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'membership')->first();
+        $this->assertSame(1, DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'service')->count());
+        $this->assertNotNull($supportItem);
+        $this->assertNotNull($membershipItem);
+        $proposalWorkItem = DB::table('proposal_work_items')->where('proposal_item_id', $proposalItem->id)->first();
+        $this->assertSame('Client Final Campaign Task', $proposalWorkItem->title);
+        $this->assertSame('Final instructions agreed in the quote.', $proposalWorkItem->description);
+        $this->assertSame('2 manual campaign checks', $proposalWorkItem->scope_value);
+
+        $this->post('/saved_quotes', ['action'=>'onboard_quote', 'proposal_id'=>$quote->id])
+            ->assertRedirectContains('/client?id=')->assertSessionHas('success');
+        $project = DB::table('projects')->where('source_proposal_item_id', $proposalItem->id)->first();
+        $task = DB::table('project_tasks')->where('project_id', $project->id)->first();
+        $supportProject = DB::table('projects')->where('source_proposal_item_id', $supportItem->id)->first();
+        $membershipProject = DB::table('projects')->where('source_proposal_item_id', $membershipItem->id)->first();
+        $supportTask = DB::table('project_tasks')->where('project_id', $supportProject->id)->first();
+        $membershipTask = DB::table('project_tasks')->where('project_id', $membershipProject->id)->first();
+        $this->assertDatabaseHas('proposals', ['id'=>$quote->id, 'status'=>'accepted']);
+        $this->assertSame('Activate '.$supportItem->title, $supportTask->title);
+        $this->assertSame('Start '.$membershipItem->title, $membershipTask->title);
+        $this->assertSame('Client Final Campaign Task', $task->title);
+        $this->assertStringContainsString('Final instructions agreed in the quote.', $task->description);
+        $this->assertStringContainsString('2 manual campaign checks', $task->description);
+        $this->assertNull($task->recurrence_id);
+        $this->assertSame(0, DB::table('project_task_recurrences')->where('project_id', $project->id)->count());
+        $this->get('/quote_view?id='.$quote->id)->assertOk()->assertSee('Locked')->assertDontSee('> Edit<', false);
+
+        $this->post('/saved_quotes', ['action'=>'onboard_quote', 'proposal_id'=>$quote->id])->assertRedirectContains('/client?id=');
+        $this->assertSame(3, DB::table('projects')->where('source_proposal_id', $quote->id)->count());
+        $this->assertSame(3, DB::table('project_tasks')->whereIn('project_id', [$project->id,$supportProject->id,$membershipProject->id])->count());
+    }
+
     public function test_admin_can_update_service_catalog_price_from_quote_settings(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
@@ -478,6 +594,31 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseMissing('proposal_deliveries', ['proposal_id'=>$proposalId]);
     }
 
+    public function test_accepted_quote_cannot_be_deleted_from_ui_or_backend(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $proposalId = DB::table('proposals')->insertGetId([
+            'proposal_number'=>'Q-ACCEPTED-PROTECTED', 'builder_version'=>1, 'client_id'=>null, 'package_id'=>null,
+            'title'=>'Protected accepted quote', 'business_name'=>'Protected Client', 'contact_name'=>'Protected Contact',
+            'contact_email'=>'protected@example.test', 'subtotal'=>750, 'total'=>750, 'status'=>'accepted',
+            'share_token'=>'accepted-protected-token', 'created_at'=>now()->toIso8601String(), 'updated_at'=>now()->toIso8601String(),
+        ]);
+
+        $response = $this->get('/saved_quotes')->assertOk()->assertSee('Q-ACCEPTED-PROTECTED')
+            ->assertDontSee('<th>Deliveries</th>', false)
+            ->assertDontSee('Create revision')
+            ->assertDontSee('Revision 1')
+            ->assertDontSee('value="duplicate_quote"', false);
+        preg_match('/Q-ACCEPTED-PROTECTED.*?<\/tr>/s', $response->getContent(), $acceptedRow);
+        $this->assertNotEmpty($acceptedRow);
+        $this->assertStringContainsString('Accepted quote is locked', $acceptedRow[0]);
+        $this->assertStringNotContainsString('value="delete_quote"', $acceptedRow[0]);
+
+        $this->post('/saved_quotes', ['action'=>'delete_quote', 'proposal_id'=>$proposalId])
+            ->assertRedirect('/saved_quotes')->assertSessionHas('danger', 'Accepted and onboarded quotes cannot be deleted. Create a new revision if another quote is required.');
+        $this->assertDatabaseHas('proposals', ['id'=>$proposalId, 'status'=>'accepted']);
+    }
+
     public function test_clients_list_uses_accepted_quote_package_and_monthly_value_without_legacy_subscription(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
@@ -495,7 +636,7 @@ class AgencySystemTest extends TestCase
             'package_id'=>$package->id, 'title'=>'XYZ accepted quote', 'business_name'=>'XYZ Quote Fallback',
             'contact_name'=>'XYZ Contact', 'contact_email'=>'xyz-fallback@example.test', 'selected_tier'=>'basic',
             'membership_plan'=>'growth', 'membership_name'=>'Social Media Growth',
-            'membership_duration_months'=>12, 'membership_monthly_price'=>1495,
+            'membership_duration_months'=>12, 'membership_monthly_price'=>0, 'membership_amount'=>17940,
             'subtotal'=>17940, 'total'=>17940, 'status'=>'accepted', 'share_token'=>'xyz-fallback-token',
             'created_at'=>now()->toIso8601String(), 'updated_at'=>now()->toIso8601String(),
         ]);
@@ -503,12 +644,107 @@ class AgencySystemTest extends TestCase
         $row = collect(app(\App\Services\AgencyService::class)->clients())->firstWhere('id', $clientId);
         $this->assertSame($package->name, $row['package_name']);
         $this->assertSame(1495.0, (float)$row['monthly_price']);
+        $this->assertSame(17940.0, (float)$row['accepted_quote_value']);
 
         $this->get('/clients')->assertOk()
-            ->assertSee('XYZ Quote Fallback')->assertSee($package->name)->assertSee('$1,495.00')
-            ->assertSee('Unpaid invoices')
+            ->assertSee('XYZ Quote Fallback')->assertSee($package->name)->assertSee('$17,940.00')->assertSee('$1,495.00')
+            ->assertSee('Accepted quote')->assertSee('Monthly recurring')
+            ->assertSee('Email')->assertSee('Phone')->assertSee('Onboarded')
+            ->assertSee('xyz-fallback@example.test')
+            ->assertDontSee('Unpaid invoices')->assertDontSee('New Client')
+            ->assertDontSee('clients#modal-add')->assertDontSee('name="action" value="create_client"', false)
             ->assertDontSee('<th>Health</th>', false)
             ->assertDontSee('<th>Account manager</th>', false);
+
+        $this->get('/clients?q=XYZ+Quote&package_id='.$package->id.'&status=active&min_monthly=1495&max_monthly=1495')
+            ->assertOk()->assertSee('XYZ Quote Fallback')->assertSee('$1,495.00')
+            ->assertSee('name="package_id"', false)->assertSee('name="min_monthly"', false)
+            ->assertSee('name="max_monthly"', false);
+
+        $today = now()->toDateString();
+        $this->get('/saved_quotes?status=accepted&package_id='.$package->id.'&date_from='.$today.'&date_to='.$today)
+            ->assertOk()->assertSee('Q-CLIENT-FALLBACK')->assertSee('name="package_id"', false)
+            ->assertSee('name="date_from"', false)->assertSee('name="date_to"', false);
+    }
+
+    public function test_super_admin_can_use_simplified_project_and_task_workflow_with_filters_and_editing(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $clientId = (int) DB::table('clients')->where('status', 'active')->orderBy('id')->value('id');
+        $employeeId = (int) DB::table('employees')->where('status', 'active')->orderBy('id')->value('id');
+
+        $this->post('/projects', [
+            'action'=>'create_project', 'client_id'=>$clientId, 'name'=>'Simplified Project QA',
+            'project_type'=>'Website', 'start_date'=>'2026-09-01', 'notes'=>'Created from the reduced project form.',
+        ])->assertRedirect('/projects')->assertSessionHas('success');
+
+        $projectId = (int) DB::table('projects')->where('name', 'Simplified Project QA')->value('id');
+        $this->assertDatabaseHas('projects', [
+            'id'=>$projectId, 'client_id'=>$clientId, 'package_id'=>null, 'manager_id'=>null,
+            'deadline'=>null, 'budget'=>0, 'estimated_hours'=>0, 'priority'=>'medium', 'status'=>'planning',
+        ]);
+
+        $this->post('/tasks', [
+            'action'=>'create_task', 'project_id'=>$projectId, 'assigned_employee_id'=>$employeeId,
+            'title'=>'Simplified Task QA', 'description'=>'Created without estimated hours.',
+            'due_date'=>'2026-09-12', 'priority'=>'medium',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+
+        $taskId = (int) DB::table('project_tasks')->where('project_id', $projectId)->where('title', 'Simplified Task QA')->value('id');
+        $this->assertDatabaseHas('project_tasks', ['id'=>$taskId, 'estimated_hours'=>0, 'status'=>'todo']);
+
+        $this->get('/projects?client_id='.$clientId.'&project_type=Website&status=planning')
+            ->assertOk()->assertSee('Simplified Project QA')->assertSee('name="client_id"', false)
+            ->assertSee('name="project_type"', false)->assertSee('name="status"', false)
+            ->assertSee('tasks?project_id='.$projectId, false)->assertSee('Edit project')
+            ->assertDontSee('name="package_id"', false)->assertDontSee('name="manager_id"', false)
+            ->assertDontSee('name="budget"', false)->assertDontSee('name="estimated_hours"', false)
+            ->assertDontSee('name="deadline"', false);
+
+        $this->get('/tasks?project_id='.$projectId.'&assigned_employee_id='.$employeeId.'&status=todo')
+            ->assertOk()->assertSee('Simplified Task QA')->assertSee('name="project_id"', false)
+            ->assertSee('name="assigned_employee_id"', false)->assertSee('name="status"', false)
+            ->assertSee('Duplicate')->assertSee('Logs')->assertSee('Add note')->assertSee('Delete')
+            ->assertSee('Edit task')->assertDontSee('name="estimated_hours"', false);
+
+        $this->post('/projects', [
+            'action'=>'update_project', 'project_id'=>$projectId, 'client_id'=>$clientId,
+            'name'=>'Edited Project QA', 'project_type'=>'Branding', 'start_date'=>'2026-09-02',
+            'status'=>'active', 'notes'=>'Edited by Super Admin.',
+        ])->assertRedirect('/projects')->assertSessionHas('success');
+        $this->assertDatabaseHas('projects', ['id'=>$projectId, 'name'=>'Edited Project QA', 'project_type'=>'Branding', 'status'=>'active']);
+
+        $this->post('/tasks', [
+            'action'=>'update_task', 'task_id'=>$taskId, 'project_id'=>$projectId,
+            'assigned_employee_id'=>$employeeId, 'title'=>'Edited Task QA', 'description'=>'Edited by Super Admin.',
+            'due_date'=>'2026-09-15', 'priority'=>'high', 'status'=>'in_progress',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->assertDatabaseHas('project_tasks', [
+            'id'=>$taskId, 'title'=>'Edited Task QA', 'priority'=>'high', 'status'=>'in_progress', 'estimated_hours'=>0,
+        ]);
+
+        $this->post('/tasks', ['action'=>'add_task_note', 'task_id'=>$taskId, 'note'=>'Waiting for the client approval before publishing.'])
+            ->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->post('/tasks', ['action'=>'task_status', 'id'=>$taskId, 'status'=>'review'])
+            ->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->post('/tasks', ['action'=>'duplicate_task', 'task_id'=>$taskId])
+            ->assertRedirect('/tasks')->assertSessionHas('success');
+
+        $copyId = (int) DB::table('project_tasks')->where('title', 'Edited Task QA (Copy)')->value('id');
+        $this->assertDatabaseHas('project_tasks', [
+            'id'=>$copyId, 'project_id'=>$projectId, 'client_id'=>$clientId, 'status'=>'todo', 'actual_hours'=>0,
+        ]);
+        $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$taskId, 'action'=>'note_added']);
+        $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$taskId, 'action'=>'status_changed']);
+        $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$taskId, 'action'=>'duplicated']);
+        $this->get('/tasks?project_id='.$projectId)->assertOk()
+            ->assertSee('Edited Task QA (Copy)')->assertSee('Waiting for the client approval before publishing.')
+            ->assertSee('Status Changed')->assertSee('TASK ACTIVITY TRAIL');
+
+        $this->post('/tasks', ['action'=>'delete_task', 'task_id'=>$copyId])
+            ->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->assertDatabaseMissing('project_tasks', ['id'=>$copyId]);
+        $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$copyId, 'action'=>'deleted']);
     }
 
     public function test_super_admin_can_edit_role_details_and_permissions(): void
@@ -584,8 +820,8 @@ class AgencySystemTest extends TestCase
 
         $this->get('/settings')
             ->assertOk()
-            ->assertSee('QA Updated Service')
-            ->assertSee('Edit QA Updated Service');
+            ->assertDontSee('Service pricing controls')
+            ->assertDontSee('Edit QA Updated Service');
     }
 
     public function test_sales_pipeline_enforces_relationship_workflow_and_synchronizes_records(): void
@@ -707,6 +943,33 @@ class AgencySystemTest extends TestCase
         ])->assertRedirect('/settings')->assertSessionHas('success');
         $this->assertDatabaseHas('pipeline_stages', ['id'=>$wonStage->id, 'name'=>'Won Business', 'win_probability'=>100, 'is_closed'=>1]);
 
-        $this->get('/settings')->assertOk()->assertSee('Decision Review')->assertSee('Add stage')->assertSee('protected closing stage');
+        $this->get('/settings')->assertOk()
+            ->assertDontSee('Pipeline stages')
+            ->assertDontSee('Lead sources')
+            ->assertDontSee('Decision Review');
+    }
+
+    public function test_command_center_and_reports_follow_the_quote_to_delivery_workflow(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+
+        $this->get('/dashboard')->assertOk()
+            ->assertSee('One clear path from accepted scope to delivered work.')
+            ->assertSee('Accepted quote value')
+            ->assertSee('Recent quotes')
+            ->assertSee('Project delivery')
+            ->assertSee('Recent workflow activity')
+            ->assertDontSee('Sales pipeline velocity')
+            ->assertDontSee('Upcoming production');
+
+        $this->get('/reports')->assertOk()
+            ->assertSee('Workflow Reports')
+            ->assertSee('Quote performance')
+            ->assertSee('Package performance')
+            ->assertSee('Client value')
+            ->assertSee('Project delivery')
+            ->assertSee('Task workload')
+            ->assertDontSee('Sales funnel')
+            ->assertDontSee('Team utilization');
     }
 }

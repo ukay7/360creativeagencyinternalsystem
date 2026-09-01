@@ -1,14 +1,47 @@
-<?php
-$salesTotal=array_sum(array_column($reports['sales'],'value'));$weighted=array_sum(array_column($reports['sales'],'weighted'));
-$revenue=array_sum(array_column($reports['profitability'],'revenue'));$cost=array_sum(array_column($reports['profitability'],'actual_cost'));$profit=$revenue-$cost;
-?>
-<div class="page-title-wrap"><div><span class="eyebrow">MANAGEMENT INTELLIGENCE</span><h1>Agency Reports</h1><p>Revenue, pipeline, utilization, and profitability from live operational data.</p></div><button class="btn btn-outline-secondary" data-print><i class="fal fa-print mr-1"></i> Export report</button></div>
-<section class="panel report-highlight mb-4"><div class="panel-container show"><div class="panel-content"><div class="row">
-<div class="col-md-3"><small class="text-uppercase opacity-60">Pipeline</small><div class="fs-xxl font-weight-bold"><?= e(money($salesTotal)) ?></div></div><div class="col-md-3"><small class="text-uppercase opacity-60">Weighted forecast</small><div class="fs-xxl font-weight-bold"><?= e(money($weighted)) ?></div></div><div class="col-md-3"><small class="text-uppercase opacity-60">Project value</small><div class="fs-xxl font-weight-bold"><?= e(money($revenue)) ?></div></div><div class="col-md-3"><small class="text-uppercase opacity-60">Gross margin</small><div class="fs-xxl font-weight-bold"><?= e(number_format($revenue?($profit/$revenue*100):0,1)) ?>%</div></div>
-</div></div></div></section>
+<?php $summary=$reports['summary']; ?>
+<div class="page-title-wrap command-title"><div><span class="eyebrow">QUOTE & DELIVERY INTELLIGENCE</span><h1>Workflow Reports</h1><p>Commercial performance, client value, project progress, and task delivery in one live report.</p></div><button class="btn btn-outline-secondary" data-print><i class="fal fa-print mr-1"></i> Export report</button></div>
 
-<div class="row"><div class="col-xl-6"><section class="panel"><div class="panel-hdr"><h2>Sales funnel</h2></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0 report-table"><thead><tr><th>Stage</th><th>Deals</th><th>Value</th><th>Weighted</th></tr></thead><tbody><?php foreach($reports['sales'] as $row): ?><tr><td><strong><?= e($row['stage']) ?></strong></td><td><?= (int)$row['deals'] ?></td><td><?= e(money($row['value'])) ?></td><td><?= e(money($row['weighted'])) ?></td></tr><?php endforeach; ?></tbody><tfoot><tr><td>Total</td><td><?= array_sum(array_column($reports['sales'],'deals')) ?></td><td><?= e(money($salesTotal)) ?></td><td><?= e(money($weighted)) ?></td></tr></tfoot></table></div></div></section></div>
-<div class="col-xl-6"><section class="panel"><div class="panel-hdr"><h2>Client economics</h2></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Client</th><th>Package</th><th>MRR</th><th>Invoiced</th><th>Collected</th><th>Health</th></tr></thead><tbody><?php foreach($reports['clients'] as $row): ?><tr><td><strong><?= e($row['name']) ?></strong></td><td><?= e($row['package_name'] ?: '—') ?></td><td><?= e(money($row['monthly_price'])) ?></td><td><?= e(money($row['invoiced'])) ?></td><td><?= e(money($row['collected'])) ?></td><td><i class="health-dot health-<?= e($row['health']) ?>"></i><?= e(ucwords(str_replace('_',' ',$row['health']))) ?></td></tr><?php endforeach; ?></tbody></table></div></div></section></div></div>
+<section class="report-hero">
+    <div><span>Accepted quote value</span><strong><?= e(money($summary['accepted_quote_value'])) ?></strong><small><?= (int)$summary['accepted_quotes'] ?> accepted from <?= (int)$summary['total_quotes'] ?> saved quotes</small></div>
+    <div><span>Quote acceptance</span><strong><?= e(number_format($summary['acceptance_rate'],1)) ?>%</strong><small>Accepted proposals / all saved proposals</small></div>
+    <div><span>Monthly recurring</span><strong><?= e(money($summary['monthly_recurring'])) ?></strong><small>Active client membership value</small></div>
+    <div><span>Delivery health</span><strong><?= (int)$summary['open_tasks'] ?> open</strong><small class="<?= $summary['overdue_tasks']?'text-warning':'' ?>"><?= (int)$summary['overdue_tasks'] ?> overdue tasks</small></div>
+</section>
 
-<div class="row mt-3"><div class="col-xl-7"><section class="panel"><div class="panel-hdr"><h2>Project profitability</h2><div class="panel-toolbar"><span class="badge badge-soft-success">Internal only</span></div></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Project</th><th>Client</th><th>Revenue</th><th>Actual cost</th><th>Gross profit</th><th>Margin</th></tr></thead><tbody><?php foreach($reports['profitability'] as $row): ?><tr><td><strong><?= e($row['project_name']) ?></strong></td><td><?= e($row['business_name']) ?></td><td><?= e(money($row['revenue'])) ?></td><td><?= e(money($row['actual_cost'])) ?></td><td><?= e(money($row['gross_profit'])) ?></td><td><span class="badge badge-soft-<?= $row['margin']>=40?'success':'warning' ?>"><?= e(number_format($row['margin'],1)) ?>%</span></td></tr><?php endforeach; ?></tbody></table></div></div></section></div>
-<div class="col-xl-5"><section class="panel"><div class="panel-hdr"><h2>Team utilization</h2></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Employee</th><th>Hours</th><th>Cost</th><th>Open tasks</th></tr></thead><tbody><?php foreach($reports['team'] as $row): ?><tr><td><strong><?= e($row['name']) ?></strong><small class="d-block text-muted"><?= e($row['department']) ?></small></td><td><?= e(number_format($row['hours'],1)) ?>h</td><td><?= e(money($row['internal_cost'])) ?></td><td><?= (int)$row['open_tasks'] ?></td></tr><?php endforeach; ?></tbody></table></div></div></section></div></div>
+<div class="row mt-4">
+    <div class="col-xl-5">
+        <section class="panel report-workflow-panel h-100"><div class="panel-hdr"><div><h2>Quote performance</h2><small>Volume and value by status</small></div></div><div class="panel-container show"><div class="panel-content">
+            <?php $maxQuoteValue=max(1,...array_map(static fn($row)=>(float)$row['quote_value'],$reports['quote_statuses'])); ?>
+            <?php if(!$reports['quote_statuses']): ?><div class="command-empty compact"><i class="fal fa-file-signature"></i><strong>No quotes yet</strong></div><?php endif; ?>
+            <?php foreach($reports['quote_statuses'] as $row): ?><div class="report-bar-row"><div><strong><?= e(ucfirst($row['status'])) ?></strong><span><?= (int)$row['quote_count'] ?> quotes</span></div><div><div class="progress-thin"><span style="width:<?= e((string)round((float)$row['quote_value']/$maxQuoteValue*100)) ?>%"></span></div><strong><?= e(money($row['quote_value'])) ?></strong></div></div><?php endforeach; ?>
+        </div></div></section>
+    </div>
+    <div class="col-xl-7 mt-3 mt-xl-0">
+        <section class="panel report-workflow-panel h-100"><div class="panel-hdr"><div><h2>Package performance</h2><small>What clients are choosing</small></div></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Package</th><th>Quotes</th><th>Accepted</th><th>Accepted value</th><th>Monthly recurring</th></tr></thead><tbody>
+            <?php if(!$reports['packages']): ?><tr><td colspan="5" class="text-center text-muted py-5">No package data yet.</td></tr><?php endif; ?>
+            <?php foreach($reports['packages'] as $row): ?><tr><td><strong><?= e(ucwords(str_replace('_',' ',$row['package_name']))) ?></strong></td><td><?= (int)$row['quote_count'] ?></td><td><?= (int)$row['accepted_count'] ?></td><td><?= e(money($row['accepted_value'])) ?></td><td><?= e(money($row['monthly_recurring'])) ?></td></tr><?php endforeach; ?>
+        </tbody></table></div></div></section>
+    </div>
+</div>
+
+<section class="panel report-workflow-panel mt-3"><div class="panel-hdr"><div><h2>Client value</h2><small>The accepted quote and recurring amounts are intentionally separated</small></div><div class="panel-toolbar"><span class="badge badge-soft-primary"><?= (int)$summary['active_clients'] ?> active clients</span></div></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Client</th><th>Package</th><th>Accepted quote</th><th>Monthly recurring</th><th>Projects</th><th>Open tasks</th><th>Completed tasks</th></tr></thead><tbody>
+    <?php if(!$reports['clients']): ?><tr><td colspan="7" class="text-center text-muted py-5">Clients will appear after a quote is accepted and onboarded.</td></tr><?php endif; ?>
+    <?php foreach($reports['clients'] as $row): ?><tr><td><a class="font-weight-bold text-primary" href="<?= e(url('client',['id'=>$row['id']])) ?>"><?= e($row['business_name']) ?></a></td><td><?= e($row['package_name'] ?: '—') ?></td><td><strong><?= e(money($row['accepted_quote_value'])) ?></strong></td><td><?= e(money($row['monthly_price'])) ?></td><td><?= (int)$row['project_count'] ?></td><td><?= (int)$row['open_tasks'] ?></td><td><?= (int)$row['completed_tasks'] ?></td></tr><?php endforeach; ?>
+    </tbody></table></div></div></section>
+
+<div class="row mt-3">
+    <div class="col-xl-8">
+        <section class="panel report-workflow-panel"><div class="panel-hdr"><div><h2>Project delivery</h2><small><?= (int)$summary['active_projects'] ?> active project workspaces</small></div></div><div class="panel-container show"><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Project</th><th>Client</th><th>Status</th><th>Tasks</th><th>Progress</th></tr></thead><tbody>
+        <?php if(!$reports['projects']): ?><tr><td colspan="5" class="text-center text-muted py-5">No projects have been created yet.</td></tr><?php endif; ?>
+        <?php foreach($reports['projects'] as $row): $count=(int)$row['task_count'];$done=(int)$row['completed_tasks'];$progress=$count?round($done/$count*100):0; ?><tr><td><a class="font-weight-bold" href="<?= e(url('tasks',['project_id'=>$row['id']])) ?>"><?= e($row['project_name']) ?></a></td><td><?= e($row['business_name']) ?></td><td><span class="badge badge-soft-<?= $row['status']==='completed'?'success':'primary' ?>"><?= e(ucwords(str_replace('_',' ',$row['status']))) ?></span></td><td><?= $done ?>/<?= $count ?></td><td><div class="report-progress-cell"><div class="progress-thin"><span style="width:<?= $progress ?>%"></span></div><strong><?= $progress ?>%</strong></div></td></tr><?php endforeach; ?>
+        </tbody></table></div></div></section>
+    </div>
+    <div class="col-xl-4 mt-3 mt-xl-0">
+        <section class="panel report-workflow-panel h-100"><div class="panel-hdr"><div><h2>Task workload</h2><small>Assignments and delivery pressure</small></div></div><div class="panel-container show"><div class="panel-content p-0"><div class="workload-summary">
+            <?php foreach($reports['task_statuses'] as $row): ?><div><span><?= e(ucwords(str_replace('_',' ',$row['status']))) ?></span><strong><?= (int)$row['task_count'] ?></strong></div><?php endforeach; ?>
+        </div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Team member</th><th>Open</th><th>Overdue</th><th>Done</th></tr></thead><tbody>
+            <?php if(!$reports['assignees']): ?><tr><td colspan="4" class="text-center text-muted py-4">No assigned tasks yet.</td></tr><?php endif; ?>
+            <?php foreach($reports['assignees'] as $row): ?><tr><td><strong><?= e($row['name']) ?></strong><small class="d-block text-muted"><?= e($row['department']) ?></small></td><td><?= (int)$row['open_tasks'] ?></td><td class="<?= $row['overdue_tasks']?'text-danger font-weight-bold':'' ?>"><?= (int)$row['overdue_tasks'] ?></td><td><?= (int)$row['completed_tasks'] ?></td></tr><?php endforeach; ?>
+        </tbody></table></div></div></div></section>
+    </div>
+</div>

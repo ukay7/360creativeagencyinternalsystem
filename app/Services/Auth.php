@@ -86,6 +86,7 @@ final class Auth
         $items = DB::table('navigation_items as n')
             ->leftJoin('navigation_groups as g', 'g.id', '=', 'n.group_id')
             ->where('n.active', true)
+            ->whereNotIn('n.module', ['time','visits','content','media'])
             ->where(fn ($query) => $query->whereNull('n.group_id')->orWhere('g.active', true))
             ->orderByRaw('COALESCE(g.position, n.position)')
             ->orderBy('n.position')

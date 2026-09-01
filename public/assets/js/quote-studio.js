@@ -18,6 +18,16 @@
     var activeItems = [];
     var originalItems = {};
     (data.initialItems || []).forEach(function (item) { originalItems[String(item.service_id)] = item; });
+    var workItemSelections = {};
+    var scopeEditingRow = null;
+
+    function clone(value) { return JSON.parse(JSON.stringify(value || [])); }
+    function workSelectionKey(serviceId) { return String(tier) + ':' + String(serviceId); }
+    function quoteWorkSelection(packageItems,savedItems) {
+        if (!savedItems || !savedItems.length) return clone(packageItems || []);
+        var savedByTemplate={};savedItems.forEach(function(item){savedByTemplate[String(item.service_work_item_id||item.id)]=item;});
+        return (packageItems||[]).map(function(item){var saved=savedByTemplate[String(item.id)];return saved?Object.assign({},clone(item),clone(saved),{service_work_item_id:item.id,included:1}):Object.assign({},clone(item),{service_work_item_id:item.id,included:0});});
+    }
 
     function money(value) {
         return new Intl.NumberFormat(locale === 'en' ? 'en-CA' : locale, {style:'currency', currency:'CAD', minimumFractionDigits:2}).format(Number(value || 0));
@@ -110,7 +120,27 @@
         form.elements.years_operating.value = '';
     }
 
-    function applyLanguage() {
+    function captureServiceState() {
+        var state = {};
+        document.querySelectorAll('#quote-service-rows tr').forEach(function (row) {
+            if (!row._packageItem) return;
+            var discount = Math.min(100, Math.max(0, Number(row.querySelector('.quote-item-discount').value || 0)));
+            var customText = row.querySelector('.quote-item-custom').value.trim();
+            var custom = customText === '' ? null : Math.max(0, Number(customText || 0));
+            var list = Number(row._packageItem.unit_price || 0);
+            state[String(row._packageItem.service_id)] = {
+                enabled: row.querySelector('.quote-item-enabled').checked,
+                discount_percent: discount,
+                custom_price: custom,
+                final_price: custom === null ? Math.round(list * (1 - discount / 100) * 100) / 100 : custom,
+                work_items: clone(row._packageItem.work_items || [])
+            };
+        });
+        return state;
+    }
+
+    function applyLanguage(useOriginal) {
+        var preservedItems = useOriginal ? null : captureServiceState();
         root.setAttribute('dir', locale === 'en' ? 'ltr' : 'rtl');
         root.dataset.locale = locale;
         document.getElementById('quote-locale-input').value = locale;
@@ -120,7 +150,7 @@
         root.querySelectorAll('.assessment-label').forEach(function (node) { node.textContent = node.dataset[locale] || node.dataset.en; });
         root.querySelectorAll('.assessment-answer option').forEach(function (option) { option.textContent = option.dataset[locale] || option.dataset.en; });
         syncRelationshipPicker();
-        renderWeightList(); renderServices(false); renderPlans(); updateReview();
+        renderWeightList(); renderServices(Boolean(useOriginal), preservedItems); renderPlans(); updateReview();
     }
 
     function currentPackage() { return (data.packages || []).find(function (item) { return item.tier === tier; }) || (data.packages || [])[0]; }
@@ -133,13 +163,13 @@
             var customInput = row.querySelector('.quote-item-custom');
             var custom = customInput.value.trim() === '' ? null : Math.max(0, Number(customInput.value || 0));
             var finalPrice = custom === null ? Math.round(list * (1 - discount / 100) * 100) / 100 : custom;
-            rows.push({service_id:Number(packageItem.service_id), list_price:list, discount_percent:discount, custom_price:custom, final_price:finalPrice, description:packageItem.description || packageItem.service_description || '', description_ar:packageItem.description_ar || packageItem.service_description_ar || '', description_he:packageItem.description_he || packageItem.service_description_he || ''});
+            rows.push({service_id:Number(packageItem.service_id), list_price:list, discount_percent:discount, custom_price:custom, final_price:finalPrice, description:packageItem.description || packageItem.service_description || '', description_ar:packageItem.description_ar || packageItem.service_description_ar || '', description_he:packageItem.description_he || packageItem.service_description_he || '', work_items:clone(packageItem.work_items||[])});
         });
         activeItems = rows;
         return rows;
     }
 
-    function renderServices(useOriginal) {
+    function renderServices(useOriginal, preservedItems) {
         var pack = currentPackage(); if (!pack) return;
         document.getElementById('selected-tier').value = tier;
         document.getElementById('tier-override').value = tier;
@@ -148,22 +178,31 @@
         tbody.innerHTML = '';
         (pack.items || []).forEach(function (item, index) {
             var original = useOriginal ? originalItems[String(item.service_id)] : null;
-            var enabled = original ? true : Number(item.included) === 1;
-            var discount = original ? Number(original.discount_percent || 0) : 0;
+            var preserved = preservedItems ? preservedItems[String(item.service_id)] : null;
+            var selectionKey = workSelectionKey(item.service_id);
+            if (preserved) {
+                workItemSelections[selectionKey] = clone(preserved.work_items || []);
+            } else if (!workItemSelections[selectionKey]) {
+                workItemSelections[selectionKey] = quoteWorkSelection(item.work_items || [], original && original.work_items);
+            }
+            var viewItem = clone(item); viewItem.work_items = workItemSelections[selectionKey];
+            var enabled = preserved ? Boolean(preserved.enabled) : (original ? true : Number(item.included) === 1);
+            var discount = preserved ? Number(preserved.discount_percent || 0) : (original ? Number(original.discount_percent || 0) : 0);
             var originalFinal = original ? Number(original.total || 0) : null;
             var list = Number(item.unit_price || 0);
             var expectedDiscounted = Math.round(list * (1 - discount / 100) * 100) / 100;
-            var custom = original && Math.abs(originalFinal - expectedDiscounted) > 0.009 ? originalFinal : '';
+            var custom = preserved ? (preserved.custom_price === null ? '' : Number(preserved.custom_price)) : (original && Math.abs(originalFinal - expectedDiscounted) > 0.009 ? originalFinal : '');
+            var displayedFinal = preserved ? Number(preserved.final_price || 0) : (original ? originalFinal : list);
             var title = localized(item, 'name');
             var description = localized(item, 'description') || localized(item, 'service_description');
-            var tr = document.createElement('tr'); tr._packageItem = item;
+            var tr = document.createElement('tr'); tr._packageItem = viewItem;
             tr.innerHTML = '<td><label class="quote-check"><input class="quote-item-enabled" type="checkbox" '+(enabled?'checked':'')+'><span></span></label></td>'+
                 '<td><span class="quote-row-number">'+(index+1)+'</span></td>'+
-                '<td><div class="quote-service-title"><strong>'+esc(title)+'</strong><button type="button" class="quote-scope-help" data-scope-help title="'+esc(dictionary('scope_details'))+'" aria-label="'+esc(dictionary('scope_details'))+'">?</button></div><small><b>'+esc(item.category || '')+'</b> · '+esc(description)+'</small></td>'+
+                '<td><div class="quote-service-title"><strong>'+esc(title)+'</strong><button type="button" class="quote-scope-help" data-scope-help title="Edit quote items" aria-label="Edit quote items"><i class="fal fa-pencil"></i></button></div><small><b>'+esc(item.category || '')+'</b> · '+esc(description)+'<span class="quote-work-summary">'+((viewItem.work_items||[]).length?' · '+(viewItem.work_items||[]).filter(function(work){return Number(work.included)===1;}).length+' quote items':'')+'</span></small></td>'+
                 '<td class="quote-list-price">'+money(list)+'</td>'+
                 '<td><input class="quote-price-input quote-item-discount" type="number" min="0" max="100" step="0.01" value="'+esc(discount)+'"></td>'+
-                '<td><input class="quote-price-input quote-item-custom" type="number" min="0" step="0.01" value="'+esc(custom)+'" placeholder="Custom"></td>'+
-                '<td><strong class="quote-final-price">'+money(original ? originalFinal : list)+'</strong></td>';
+                '<td><input class="quote-price-input quote-item-custom" type="number" min="0" step="0.01" value="'+esc(custom)+'" placeholder="Custom" aria-label="Custom price for '+esc(title)+'"></td>'+
+                '<td><strong class="quote-final-price">'+money(displayedFinal)+'</strong></td>';
             tbody.appendChild(tr);
         });
         updatePricing();
@@ -208,6 +247,58 @@
         renderServices(false);
     }
 
+    function quoteWorkItemEditor(work, index) {
+        var title=work.title||work.name||'',description=work.description||work.task_description||'',scope=work.scope_value||work.value_label||'';
+        var enabled=work.included==null||Number(work.included)===1;
+        function option(value,label,current){return '<option value="'+value+'"'+(String(current||'')===value?' selected':'')+'>'+label+'</option>';}
+        return '<article class="quote-work-item-editor" data-work-index="'+index+'"><header><span>'+(index+1)+'</span><strong>'+esc(title||'Quote item')+'</strong><label><input class="quote-work-enabled" type="checkbox" '+(enabled?'checked':'')+'> Included</label></header><div class="quote-work-item-fields">'+
+            '<label><span>Name (English)</span><input class="quote-work-title" value="'+esc(title)+'"></label><label><span>Name (Arabic)</span><input dir="rtl" class="quote-work-title-ar" value="'+esc(work.title_ar||work.name_ar||'')+'"></label><label><span>Name (Hebrew)</span><input dir="rtl" class="quote-work-title-he" value="'+esc(work.title_he||work.name_he||'')+'"></label>'+
+            '<label class="wide"><span>Task instructions (English)</span><textarea class="quote-work-description" rows="2">'+esc(description)+'</textarea></label><label><span>Arabic instructions</span><textarea dir="rtl" class="quote-work-description-ar" rows="2">'+esc(work.description_ar||work.task_description_ar||'')+'</textarea></label><label><span>Hebrew instructions</span><textarea dir="rtl" class="quote-work-description-he" rows="2">'+esc(work.description_he||work.task_description_he||'')+'</textarea></label>'+
+            '<label><span>Final scope / value</span><input class="quote-work-scope" value="'+esc(scope)+'" placeholder="e.g. 40 edited photos"></label><label><span>Arabic value</span><input dir="rtl" class="quote-work-scope-ar" value="'+esc(work.scope_value_ar||work.value_label_ar||'')+'"></label><label><span>Hebrew value</span><input dir="rtl" class="quote-work-scope-he" value="'+esc(work.scope_value_he||work.value_label_he||'')+'"></label>'+
+            '<label><span>Work type</span><select class="quote-work-schedule">'+option('one_time','One time',work.schedule_type)+option('recurring','Recurring',work.schedule_type)+'</select></label><label><span>Repeat frequency</span><select class="quote-work-frequency">'+option('daily','Daily',work.frequency)+option('weekly','Weekly',work.frequency||'weekly')+option('monthly','Monthly',work.frequency)+option('yearly','Yearly',work.frequency)+'</select></label></div></article>';
+    }
+
+    function openQuoteWorkItems(row) {
+        scopeEditingRow=row;
+        var item=row._packageItem,workItems=item.work_items||[],workList=document.getElementById('quote-scope-work-items');
+        document.getElementById('quote-scope-title').textContent=localized(item,'name');
+        document.getElementById('quote-scope-description').textContent=localized(item,'description')||localized(item,'service_description');
+        workList.innerHTML=workItems.map(quoteWorkItemEditor).join('')||'<p>No service items are configured for this package.</p>';
+        workList.hidden=false;
+        document.getElementById('quote-scope-modal').hidden=false;
+        document.body.classList.add('quote-modal-open');
+    }
+
+    function applyQuoteWorkItems() {
+        if (!scopeEditingRow) return;
+        var current=scopeEditingRow._packageItem.work_items||[];
+        var updated=Array.prototype.map.call(document.querySelectorAll('#quote-scope-work-items .quote-work-item-editor'),function(card,index){
+            var original=current[index]||{};
+            return Object.assign({},original,{
+                service_work_item_id:original.service_work_item_id||original.id,
+                included:card.querySelector('.quote-work-enabled').checked?1:0,
+                name:card.querySelector('.quote-work-title').value.trim(),title:card.querySelector('.quote-work-title').value.trim(),
+                name_ar:card.querySelector('.quote-work-title-ar').value.trim(),title_ar:card.querySelector('.quote-work-title-ar').value.trim(),
+                name_he:card.querySelector('.quote-work-title-he').value.trim(),title_he:card.querySelector('.quote-work-title-he').value.trim(),
+                task_description:card.querySelector('.quote-work-description').value.trim(),description:card.querySelector('.quote-work-description').value.trim(),
+                task_description_ar:card.querySelector('.quote-work-description-ar').value.trim(),description_ar:card.querySelector('.quote-work-description-ar').value.trim(),
+                task_description_he:card.querySelector('.quote-work-description-he').value.trim(),description_he:card.querySelector('.quote-work-description-he').value.trim(),
+                value_label:card.querySelector('.quote-work-scope').value.trim(),scope_value:card.querySelector('.quote-work-scope').value.trim(),
+                value_label_ar:card.querySelector('.quote-work-scope-ar').value.trim(),scope_value_ar:card.querySelector('.quote-work-scope-ar').value.trim(),
+                value_label_he:card.querySelector('.quote-work-scope-he').value.trim(),scope_value_he:card.querySelector('.quote-work-scope-he').value.trim(),
+                schedule_type:card.querySelector('.quote-work-schedule').value,frequency:card.querySelector('.quote-work-frequency').value
+            });
+        });
+        scopeEditingRow._packageItem.work_items=updated;
+        workItemSelections[workSelectionKey(scopeEditingRow._packageItem.service_id)]=updated;
+        var summary=scopeEditingRow.querySelector('.quote-work-summary');
+        if(summary)summary.textContent=updated.length?' · '+updated.filter(function(work){return Number(work.included)===1;}).length+' quote items':'';
+        document.getElementById('quote-scope-modal').hidden=true;
+        document.body.classList.remove('quote-modal-open');
+        scopeEditingRow=null;
+        updatePricing();
+    }
+
     function renderWeightList() {
         var host = document.getElementById('quote-weight-list');
         if (!host) return;
@@ -244,7 +335,11 @@
         var hasMembership=membershipCode!=='none';
         document.getElementById('membership-term-panel').hidden=!hasMembership;
         document.getElementById('custom-membership-panel').hidden=membershipCode!=='custom';
-        document.getElementById('custom-duration-panel').hidden=membershipTermMode!=='custom';
+        var customDurationActive=hasMembership&&membershipTermMode==='custom';
+        document.getElementById('custom-duration-panel').hidden=!customDurationActive;
+        var customDurationInput=document.getElementById('custom-membership-duration');
+        customDurationInput.disabled=!customDurationActive;
+        if(customDurationActive&&Number(customDurationInput.value)<1)customDurationInput.value=String(Math.max(1,membershipDuration||3));
         root.querySelectorAll('[data-membership-term]').forEach(function(button){button.classList.toggle('active',button.dataset.membershipTerm===membershipTermMode);});
         var amount=totals();
         document.getElementById('plan-setup-total').textContent=money(amount.setup);
@@ -295,7 +390,7 @@
     function validCurrentStep(){if(step!==1)return true;var fields=root.querySelector('[data-step="1"]').querySelectorAll('[required]');for(var i=0;i<fields.length;i++){if(!fields[i].checkValidity()){fields[i].reportValidity();return false;}}return true;}
 
     var localeSelector=document.getElementById('quote-locale');
-    if(localeSelector)localeSelector.addEventListener('change',function(){locale=this.value;applyLanguage();});
+    if(localeSelector)localeSelector.addEventListener('change',function(){locale=this.value;applyLanguage(false);});
     document.getElementById('tier-override').addEventListener('change',function(){applyTierPreset(this.value);});
     root.addEventListener('click',function(event){
         var tierButton=event.target.closest('[data-tier]');if(tierButton){applyTierPreset(tierButton.dataset.tier);return;}
@@ -303,10 +398,11 @@
         var memberButton=event.target.closest('[data-membership]');if(memberButton){membershipCode=memberButton.dataset.membership;renderPlans();updateReview();return;}
         var termButton=event.target.closest('[data-membership-term]');if(termButton){membershipTermMode=termButton.dataset.membershipTerm;if(membershipTermMode!=='custom')membershipDuration=Number(membershipTermMode);renderPlans();updateReview();return;}
         var scoreButton=event.target.closest('[data-score-help]');if(scoreButton){renderWeightList();document.getElementById('quote-score-modal').hidden=false;document.body.classList.add('quote-modal-open');return;}
-        var scopeButton=event.target.closest('[data-scope-help]');if(scopeButton){var row=scopeButton.closest('tr');var item=row&&row._packageItem;if(item){document.getElementById('quote-scope-title').textContent=localized(item,'name');document.getElementById('quote-scope-description').textContent=localized(item,'description')||localized(item,'service_description');var modal=document.getElementById('quote-scope-modal');modal.hidden=false;document.body.classList.add('quote-modal-open');}return;}
+        var scopeButton=event.target.closest('[data-scope-help]');if(scopeButton){var row=scopeButton.closest('tr');if(row&&row._packageItem)openQuoteWorkItems(row);return;}
         var stepButton=event.target.closest('[data-step-tab]');if(stepButton){var destination=Number(stepButton.dataset.stepTab);if(destination<=step||validCurrentStep())showStep(destination);}
     });
     document.querySelectorAll('[data-scope-close]').forEach(function(button){button.addEventListener('click',function(){document.getElementById('quote-scope-modal').hidden=true;document.body.classList.remove('quote-modal-open');});});
+    document.getElementById('quote-scope-apply').addEventListener('click',applyQuoteWorkItems);
     document.querySelectorAll('[data-score-close]').forEach(function(button){button.addEventListener('click',function(){document.getElementById('quote-score-modal').hidden=true;document.body.classList.remove('quote-modal-open');});});
     document.addEventListener('keydown',function(event){if(event.key==='Escape'){document.getElementById('quote-scope-modal').hidden=true;document.getElementById('quote-score-modal').hidden=true;document.body.classList.remove('quote-modal-open');}});
     document.getElementById('quote-service-rows').addEventListener('input',updatePricing);
@@ -347,5 +443,5 @@
     document.addEventListener('click',function(event){if(!event.target.closest('#quote-relationship-combobox')){closeRelationshipPicker();syncRelationshipPicker();}});
 
     root.querySelectorAll('[data-step-tab]').forEach(function(button){button.setAttribute('aria-selected',button.dataset.stepTab==='1'?'true':'false');});
-    syncRelationshipPicker(); renderWeightList(); document.getElementById('tier-override').value=tier; renderServices(!!proposal); renderPlans(); updateAssessment(false); applyLanguage(); showStep(1);
+    syncRelationshipPicker(); renderWeightList(); document.getElementById('tier-override').value=tier; updateAssessment(false); applyLanguage(!!proposal); showStep(1);
 })();

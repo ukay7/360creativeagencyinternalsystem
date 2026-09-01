@@ -1,4 +1,12 @@
 <?php
+$allowDirectCreate=$route!=='clients';
+$currentUser=$auth->user()??[];
+$isSuperAdmin=($currentUser['role_slug']??'')==='super_admin';
+$projectTypes=['Website'=>'Website','Branding'=>'Branding','Social Media'=>'Social Media','Photography'=>'Photography','Videography'=>'Videography','SEO'=>'SEO','Business Development'=>'Business Development','Marketing'=>'Marketing','E-commerce'=>'E-commerce','Consulting'=>'Consulting'];
+$projectStatuses=['planning'=>'Planning','active'=>'Active','on_hold'=>'On hold','completed'=>'Completed','cancelled'=>'Cancelled'];
+$taskStatuses=['todo'=>'To Do','in_progress'=>'In Progress','waiting'=>'Waiting','review'=>'Review','completed'=>'Completed'];
+$taskPriorities=['low'=>'Low','medium'=>'Medium','high'=>'High','urgent'=>'Urgent'];
+$hasActionColumn=in_array($route,['leads','visits','projects','tasks'],true);
 $badgeClass = static function(string $value): string {
     $danger=['overdue','at_risk','urgent','rejected','cancelled','inactive'];
     $warning=['attention','waiting','review','partially_paid','sent','confirmed','client_review','internal_review'];
@@ -45,7 +53,7 @@ $renderCell = static function(array $row,array $column) use($badgeClass,$route):
 ?>
 <div class="page-title-wrap">
     <div><span class="eyebrow">AGENCY OPERATIONS</span><h1><?= e($title) ?></h1><p><?= e($subtitle) ?></p></div>
-    <button class="btn btn-primary" data-toggle="modal" data-target="#modal-add"><i class="fal fa-plus mr-1"></i> <?= e($addLabel) ?></button>
+    <?php if($allowDirectCreate): ?><button class="btn btn-primary" data-toggle="modal" data-target="#modal-add"><i class="fal fa-plus mr-1"></i> <?= e($addLabel) ?></button><?php endif; ?>
 </div>
 
 <?php if($route==='leads'): ?>
@@ -61,6 +69,36 @@ $renderCell = static function(array $row,array $column) use($badgeClass,$route):
 </section>
 <?php endif; ?>
 
+<?php if($route==='clients'): ?>
+<section class="panel lead-filter-panel">
+    <div class="panel-container show"><div class="panel-content py-3"><form method="get" action="<?= e(url('clients')) ?>" class="lead-filter-form">
+        <div><label for="filter_client_search">Client</label><input class="form-control form-control-sm" id="filter_client_search" name="q" value="<?= e($filters['q']??'') ?>" placeholder="Business, contact, email, or phone"></div>
+        <div><label for="filter_client_package">Package</label><select class="custom-select custom-select-sm" id="filter_client_package" name="package_id"><option value="">All packages</option><?php foreach($filterOptions['packages'] as $package): ?><option value="<?= (int)$package['id'] ?>" <?= (int)($filters['package_id']??0)===(int)$package['id']?'selected':'' ?>><?= e($package['name']) ?></option><?php endforeach; ?></select></div>
+        <div><label for="filter_client_status">Status</label><select class="custom-select custom-select-sm" id="filter_client_status" name="status"><option value="">All statuses</option><?php foreach(['active'=>'Active','inactive'=>'Inactive'] as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($filters['status']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div>
+        <div><label for="filter_monthly_min">Recurring min</label><input class="form-control form-control-sm" id="filter_monthly_min" type="number" min="0" step="0.01" name="min_monthly" value="<?= e($filters['min_monthly']??'') ?>" placeholder="$0"></div>
+        <div><label for="filter_monthly_max">Recurring max</label><input class="form-control form-control-sm" id="filter_monthly_max" type="number" min="0" step="0.01" name="max_monthly" value="<?= e($filters['max_monthly']??'') ?>" placeholder="Any"></div>
+        <div class="lead-filter-actions"><button class="btn btn-sm btn-primary"><i class="fal fa-filter mr-1"></i> Apply</button><a href="<?= e(url('clients')) ?>" class="btn btn-sm btn-outline-secondary">Clear</a></div>
+    </form></div></div>
+</section>
+<?php endif; ?>
+
+<?php if(in_array($route,['projects','tasks'],true)): ?>
+<section class="panel lead-filter-panel">
+    <div class="panel-container show"><div class="panel-content py-3"><form method="get" action="<?= e(url($route)) ?>" class="lead-filter-form">
+        <?php if($route==='projects'): ?>
+            <div><label for="filter_client">Client</label><select class="custom-select custom-select-sm" id="filter_client" name="client_id"><option value="">All clients</option><?php foreach($filterOptions['clients'] as $client): ?><option value="<?= (int)$client['id'] ?>" <?= (int)($filters['client_id']??0)===(int)$client['id']?'selected':'' ?>><?= e($client['name']) ?></option><?php endforeach; ?></select></div>
+            <div><label for="filter_project_type">Type</label><select class="custom-select custom-select-sm" id="filter_project_type" name="project_type"><option value="">All types</option><?php foreach($projectTypes as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($filters['project_type']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div>
+            <div><label for="filter_project_status">Status</label><select class="custom-select custom-select-sm" id="filter_project_status" name="status"><option value="">All statuses</option><?php foreach($projectStatuses as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($filters['status']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div>
+        <?php else: ?>
+            <div><label for="filter_project">Project</label><select class="custom-select custom-select-sm" id="filter_project" name="project_id"><option value="">All projects</option><?php foreach($filterOptions['projects'] as $project): ?><option value="<?= (int)$project['id'] ?>" <?= (int)($filters['project_id']??0)===(int)$project['id']?'selected':'' ?>><?= e($project['name']) ?></option><?php endforeach; ?></select></div>
+            <div><label for="filter_assignee">Assignee</label><select class="custom-select custom-select-sm" id="filter_assignee" name="assigned_employee_id"><option value="">All assignees</option><?php foreach($filterOptions['employees'] as $employee): ?><option value="<?= (int)$employee['id'] ?>" <?= (int)($filters['assigned_employee_id']??0)===(int)$employee['id']?'selected':'' ?>><?= e($employee['name']) ?></option><?php endforeach; ?></select></div>
+            <div><label for="filter_task_status">Status</label><select class="custom-select custom-select-sm" id="filter_task_status" name="status"><option value="">All statuses</option><?php foreach($taskStatuses as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($filters['status']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div>
+        <?php endif; ?>
+        <div class="lead-filter-actions"><button class="btn btn-sm btn-primary"><i class="fal fa-filter mr-1"></i> Apply</button><a href="<?= e(url($route)) ?>" class="btn btn-sm btn-outline-secondary">Clear</a></div>
+    </form></div></div>
+</section>
+<?php endif; ?>
+
 <section class="panel">
     <div class="panel-container show"><div class="panel-content">
         <div class="data-toolbar">
@@ -68,18 +106,20 @@ $renderCell = static function(array $row,array $column) use($badgeClass,$route):
             <div class="text-muted fs-sm"><strong><?= count($rows) ?></strong> records · <button class="btn btn-sm btn-outline-secondary ml-2" data-export><i class="fal fa-file-csv mr-1"></i> CSV</button> <button class="btn btn-sm btn-outline-secondary" data-print><i class="fal fa-print mr-1"></i> Print</button></div>
         </div>
         <div class="table-responsive">
-            <table class="table table-hover mb-0" data-agency-table><thead><tr><?php foreach($columns as $column): ?><th><?= e($column[1]) ?></th><?php endforeach; ?><?php if(in_array($route,['leads','visits'],true)): ?><th class="text-right">Action</th><?php endif; ?></tr></thead><tbody>
+            <table class="table table-hover mb-0" data-agency-table><thead><tr><?php foreach($columns as $column): ?><th><?= e($column[1]) ?></th><?php endforeach; ?><?php if($hasActionColumn): ?><th class="text-right">Action</th><?php endif; ?></tr></thead><tbody>
             <?php foreach($rows as $row): ?><tr data-table-row><?php foreach($columns as $column): ?><td><?= $renderCell($row,$column) ?></td><?php endforeach; ?>
                 <?php if($route==='leads'): ?><td class="text-right"><a href="<?= e(url('lead',['id'=>(int)$row['id']])) ?>" class="btn btn-sm btn-outline-secondary mr-1"><i class="fal fa-eye mr-1"></i> View</a><?php if(!$row['converted_client_id']): ?><form method="post" action="<?= e(url('leads')) ?>" class="d-inline"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="convert_lead"><input type="hidden" name="lead_id" value="<?= (int)$row['id'] ?>"><button class="btn btn-sm btn-outline-primary" data-confirm="Convert this lead into a client?">Convert</button></form><?php else: ?><a href="<?= e(url('client',['id'=>(int)$row['converted_client_id']])) ?>" class="btn btn-sm btn-outline-success">Client</a><?php endif; ?></td><?php endif; ?>
                 <?php if($route==='visits'): ?><td class="text-right"><?php if(!in_array($row['status'],['completed','cancelled'],true)): ?><form method="post" action="<?= e(url('visits')) ?>"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="complete_visit"><input type="hidden" name="visit_id" value="<?= (int)$row['id'] ?>"><button class="btn btn-sm btn-outline-success" data-confirm="Mark this visit complete and update allowance usage?">Complete</button></form><?php else: ?><span class="text-muted fs-xs"><?= $row['is_additional']?'Billable overage':'Allowance used' ?></span><?php endif; ?></td><?php endif; ?>
+                <?php if($route==='projects'): ?><td class="text-right text-nowrap"><a href="<?= e(url('tasks').'?project_id='.(int)$row['id']) ?>" class="btn btn-sm btn-outline-primary mr-1"><i class="fal fa-tasks mr-1"></i> Tasks</a><?php if($isSuperAdmin): ?><button type="button" class="btn btn-sm btn-outline-secondary" data-toggle="modal" data-target="#modal-edit-project-<?= (int)$row['id'] ?>"><i class="fal fa-edit mr-1"></i> Edit</button><?php endif; ?></td><?php endif; ?>
+                <?php if($route==='tasks'): ?><td class="text-right text-nowrap"><form method="post" action="<?= e(url('tasks')) ?>" class="d-inline"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="duplicate_task"><input type="hidden" name="task_id" value="<?= (int)$row['id'] ?>"><button class="btn btn-sm btn-outline-primary" data-confirm="Duplicate this task?"><i class="fal fa-copy mr-1"></i> Duplicate</button></form> <button type="button" class="btn btn-sm btn-outline-secondary" data-toggle="modal" data-target="#modal-task-log-<?= (int)$row['id'] ?>"><i class="fal fa-history mr-1"></i> Logs</button><?php if($isSuperAdmin): ?> <button type="button" class="btn btn-sm btn-outline-secondary" data-toggle="modal" data-target="#modal-edit-task-<?= (int)$row['id'] ?>"><i class="fal fa-edit mr-1"></i> Edit</button> <form method="post" action="<?= e(url('tasks')) ?>" class="d-inline"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="delete_task"><input type="hidden" name="task_id" value="<?= (int)$row['id'] ?>"><button class="btn btn-sm btn-outline-danger" data-confirm="Delete task ‘<?= e($row['title']) ?>’? This cannot be undone."><i class="fal fa-trash-alt mr-1"></i> Delete</button></form><?php endif; ?></td><?php endif; ?>
             </tr><?php endforeach; ?>
-            <?php if(!$rows): ?><tr><td colspan="<?= count($columns)+1 ?>"><div class="empty-state"><i class="fal fa-inbox"></i><h3>No records yet</h3><p class="text-muted">Use “<?= e($addLabel) ?>” to create the first one.</p></div></td></tr><?php endif; ?>
+            <?php if(!$rows): ?><tr><td colspan="<?= count($columns)+($hasActionColumn?1:0) ?>"><div class="empty-state"><i class="fal fa-inbox"></i><h3>No records yet</h3><p class="text-muted"><?= $route==='clients'?'Clients appear here after a quote is accepted and onboarded.':'Use “'.e($addLabel).'” to create the first one.' ?></p></div></td></tr><?php endif; ?>
             </tbody></table>
         </div>
     </div></div>
 </section>
 
-<div class="modal fade" id="modal-add" tabindex="-1" role="dialog" aria-labelledby="modal-add-title" aria-hidden="true"><div class="modal-dialog <?= $route==='leads'?'modal-xl':'modal-lg' ?>" role="document"><div class="modal-content">
+<?php if($allowDirectCreate): ?><div class="modal fade" id="modal-add" tabindex="-1" role="dialog" aria-labelledby="modal-add-title" aria-hidden="true"><div class="modal-dialog <?= $route==='leads'?'modal-xl':'modal-lg' ?>" role="document"><div class="modal-content">
     <form method="post" action="<?= e(url($route)) ?>"><div class="modal-header"><div><span class="eyebrow mb-1">QUICK CREATE</span><h2 class="modal-title fs-xl" id="modal-add-title"><?= e($addLabel) ?></h2></div><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>
     <div class="modal-body"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="<?= e($action) ?>"><div class="row">
     <?php if($route==='leads'): ?><div class="col-12"><div class="alert alert-info d-flex align-items-start mb-3"><i class="fal fa-sparkles mr-2 mt-1"></i><div><strong>Lead fit score is calculated automatically</strong><span class="d-block fs-sm">Company size, business age, stage, budget, and service interest measure agency fit. Conversion probability is tracked separately through the pipeline.</span></div></div></div><?php endif; ?>
@@ -93,7 +133,47 @@ $renderCell = static function(array $row,array $column) use($badgeClass,$route):
         </div></div><?php endif; ?>
     <?php endforeach; ?>
     </div></div><div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Save <?= e(strtolower($addLabel)) ?></button></div></form>
+</div></div></div><?php endif; ?>
+
+<?php if($isSuperAdmin&&$route==='projects'): foreach($rows as $row): ?>
+<div class="modal fade" id="modal-edit-project-<?= (int)$row['id'] ?>" tabindex="-1" role="dialog" aria-labelledby="modal-edit-project-title-<?= (int)$row['id'] ?>" aria-hidden="true"><div class="modal-dialog modal-lg" role="document"><div class="modal-content"><form method="post" action="<?= e(url('projects')) ?>">
+    <div class="modal-header"><div><span class="eyebrow mb-1">SUPER ADMIN</span><h2 class="modal-title fs-xl" id="modal-edit-project-title-<?= (int)$row['id'] ?>">Edit project</h2></div><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>
+    <div class="modal-body"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="update_project"><input type="hidden" name="project_id" value="<?= (int)$row['id'] ?>"><div class="row">
+        <div class="col-md-6"><div class="form-group"><label class="required" for="edit_project_client_<?= (int)$row['id'] ?>">Client</label><select class="custom-select" id="edit_project_client_<?= (int)$row['id'] ?>" name="client_id" required><?php foreach($filterOptions['clients'] as $client): ?><option value="<?= (int)$client['id'] ?>" <?= (int)$row['client_id']===(int)$client['id']?'selected':'' ?>><?= e($client['name']) ?></option><?php endforeach; ?></select></div></div>
+        <div class="col-md-6"><div class="form-group"><label class="required" for="edit_project_name_<?= (int)$row['id'] ?>">Project name</label><input class="form-control" id="edit_project_name_<?= (int)$row['id'] ?>" name="name" value="<?= e($row['name']) ?>" required></div></div>
+        <div class="col-md-6"><div class="form-group"><label class="required" for="edit_project_type_<?= (int)$row['id'] ?>">Type</label><select class="custom-select" id="edit_project_type_<?= (int)$row['id'] ?>" name="project_type" required><?php foreach($projectTypes as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($row['project_type']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div></div>
+        <div class="col-md-6"><div class="form-group"><label class="required" for="edit_project_start_<?= (int)$row['id'] ?>">Start date</label><input class="form-control" id="edit_project_start_<?= (int)$row['id'] ?>" type="date" name="start_date" value="<?= e($row['start_date']??'') ?>" required></div></div>
+        <div class="col-md-6"><div class="form-group"><label class="required" for="edit_project_status_<?= (int)$row['id'] ?>">Status</label><select class="custom-select" id="edit_project_status_<?= (int)$row['id'] ?>" name="status" required><?php foreach($projectStatuses as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($row['status']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div></div>
+        <div class="col-12"><div class="form-group"><label for="edit_project_notes_<?= (int)$row['id'] ?>">Notes</label><textarea class="form-control" id="edit_project_notes_<?= (int)$row['id'] ?>" name="notes" rows="3"><?= e($row['notes']??'') ?></textarea></div></div>
+    </div></div><div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Save project changes</button></div>
+</form></div></div></div>
+<?php endforeach; endif; ?>
+
+<?php if($isSuperAdmin&&$route==='tasks'): foreach($rows as $row): ?>
+<div class="modal fade" id="modal-edit-task-<?= (int)$row['id'] ?>" tabindex="-1" role="dialog" aria-labelledby="modal-edit-task-title-<?= (int)$row['id'] ?>" aria-hidden="true"><div class="modal-dialog modal-lg" role="document"><div class="modal-content"><form method="post" action="<?= e(url('tasks')) ?>">
+    <div class="modal-header"><div><span class="eyebrow mb-1">SUPER ADMIN</span><h2 class="modal-title fs-xl" id="modal-edit-task-title-<?= (int)$row['id'] ?>">Edit task</h2></div><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>
+    <div class="modal-body"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="update_task"><input type="hidden" name="task_id" value="<?= (int)$row['id'] ?>"><div class="row">
+        <div class="col-md-6"><div class="form-group"><label class="required" for="edit_task_project_<?= (int)$row['id'] ?>">Project</label><select class="custom-select" id="edit_task_project_<?= (int)$row['id'] ?>" name="project_id" required><?php foreach($filterOptions['projects'] as $project): ?><option value="<?= (int)$project['id'] ?>" <?= (int)$row['project_id']===(int)$project['id']?'selected':'' ?>><?= e($project['name']) ?></option><?php endforeach; ?></select></div></div>
+        <div class="col-md-6"><div class="form-group"><label for="edit_task_assignee_<?= (int)$row['id'] ?>">Assignee</label><select class="custom-select" id="edit_task_assignee_<?= (int)$row['id'] ?>" name="assigned_employee_id"><option value="">Unassigned</option><?php foreach($filterOptions['employees'] as $employee): ?><option value="<?= (int)$employee['id'] ?>" <?= (int)($row['assigned_employee_id']??0)===(int)$employee['id']?'selected':'' ?>><?= e($employee['name']) ?></option><?php endforeach; ?></select></div></div>
+        <div class="col-12"><div class="form-group"><label class="required" for="edit_task_title_<?= (int)$row['id'] ?>">Task title</label><input class="form-control" id="edit_task_title_<?= (int)$row['id'] ?>" name="title" value="<?= e($row['title']) ?>" required></div></div>
+        <div class="col-12"><div class="form-group"><label for="edit_task_description_<?= (int)$row['id'] ?>">Description</label><textarea class="form-control" id="edit_task_description_<?= (int)$row['id'] ?>" name="description" rows="3"><?= e($row['description']??'') ?></textarea></div></div>
+        <div class="col-md-4"><div class="form-group"><label for="edit_task_due_<?= (int)$row['id'] ?>">Due date</label><input class="form-control" id="edit_task_due_<?= (int)$row['id'] ?>" type="date" name="due_date" value="<?= e($row['due_date']??'') ?>"></div></div>
+        <div class="col-md-4"><div class="form-group"><label class="required" for="edit_task_priority_<?= (int)$row['id'] ?>">Priority</label><select class="custom-select" id="edit_task_priority_<?= (int)$row['id'] ?>" name="priority" required><?php foreach($taskPriorities as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($row['priority']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div></div>
+        <div class="col-md-4"><div class="form-group"><label class="required" for="edit_task_status_<?= (int)$row['id'] ?>">Status</label><select class="custom-select" id="edit_task_status_<?= (int)$row['id'] ?>" name="status" required><?php foreach($taskStatuses as $value=>$label): ?><option value="<?= e($value) ?>" <?= ($row['status']??'')===$value?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div></div>
+    </div></div><div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Cancel</button><button type="submit" class="btn btn-primary">Save task changes</button></div>
+</form></div></div></div>
+<?php endforeach; endif; ?>
+
+<?php if($route==='tasks'): foreach($rows as $row): ?>
+<div class="modal fade" id="modal-task-log-<?= (int)$row['id'] ?>" tabindex="-1" role="dialog" aria-labelledby="modal-task-log-title-<?= (int)$row['id'] ?>" aria-hidden="true"><div class="modal-dialog modal-lg" role="document"><div class="modal-content">
+    <div class="modal-header"><div><span class="eyebrow mb-1">TASK ACTIVITY TRAIL</span><h2 class="modal-title fs-xl" id="modal-task-log-title-<?= (int)$row['id'] ?>"><?= e($row['title']) ?></h2><p class="mb-0 text-muted fs-sm"><?= e($row['project_name'].' · '.$row['business_name']) ?></p></div><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>
+    <div class="modal-body">
+        <form method="post" action="<?= e(url('tasks')) ?>" class="mb-4"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="add_task_note"><input type="hidden" name="task_id" value="<?= (int)$row['id'] ?>"><div class="form-group"><label class="required" for="task_note_<?= (int)$row['id'] ?>">Add note</label><textarea class="form-control" id="task_note_<?= (int)$row['id'] ?>" name="note" rows="3" required placeholder="Write progress, decisions, blockers, or handoff notes…"></textarea></div><div class="text-right"><button class="btn btn-primary" type="submit"><i class="fal fa-comment-alt-lines mr-1"></i> Save note</button></div></form>
+        <h3 class="fs-md mb-3">Complete history</h3>
+        <?php if(empty($row['history'])): ?><div class="alert alert-light border mb-0">No activity has been recorded yet.</div><?php else: ?><div class="list-group list-group-flush border rounded"><?php foreach($row['history'] as $entry): ?><div class="list-group-item"><div class="d-flex justify-content-between align-items-start"><strong><?= e(ucwords(str_replace('_',' ',$entry['action']))) ?></strong><small class="text-muted ml-3"><?= e($entry['created_at']?date('M j, Y · g:i A',strtotime($entry['created_at'])):'') ?></small></div><p class="mb-1 mt-1"><?= nl2br(e($entry['summary'])) ?></p><small class="text-muted">By <?= e($entry['user_name']?:'System') ?></small></div><?php endforeach; ?></div><?php endif; ?>
+    </div><div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Close</button></div>
 </div></div></div>
+<?php endforeach; endif; ?>
 
 <?php if($route==='invoices'): ?>
 <div class="modal fade" id="modal-payment" tabindex="-1" role="dialog" aria-labelledby="payment-title" aria-hidden="true"><div class="modal-dialog" role="document"><div class="modal-content"><form method="post" action="<?= e(url('invoices')) ?>">
