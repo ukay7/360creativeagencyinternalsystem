@@ -49,6 +49,7 @@ final class Auth
         $role = DB::table('roles')->where('id', $user->role_id)->first(['name', 'slug']);
         $data['role_name'] = $role->name ?? 'User';
         $data['role_slug'] = $role->slug ?? '';
+        $data['employee_id'] = DB::table('employees')->where('user_id', $user->id)->value('id');
 
         return $data;
     }

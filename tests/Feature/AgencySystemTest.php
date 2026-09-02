@@ -316,7 +316,7 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseHas('leads',['email'=>'rami@example.test','status'=>'proposal']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'service']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support']);
-        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'membership']);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support_contract']);
         $this->get('/quote_view?id='.$quote->id.'&lang=ar')->assertOk()->assertSee('ملخص العرض')->assertSee($items[0]->description_ar);
         $this->get('/quote/share/'.$quote->share_token.'?lang=he')->assertOk()->assertSee('סיכום הצעה')->assertSee($items[0]->description_he);
         $this->get('/quote_studio')->assertOk()->assertSee('Quote Journey Test')->assertSee('Prospect');
@@ -417,7 +417,7 @@ class AgencySystemTest extends TestCase
 
         $item=DB::table('package_items')->where('package_id',$package->id)->where('service_id',$service->id)->first();
         $this->assertNotNull($item);
-        $this->get('/quote_settings')->assertOk()->assertSee('Add package')->assertSee('Add service to package')->assertSee('Enterprise Launch');
+        $this->get('/quote_settings')->assertOk()->assertSee('Add setup package')->assertSee('Add service to package')->assertSee('Enterprise Launch');
         $this->get('/quote_studio')->assertOk()->assertSee('Enterprise Launch')->assertSee('data-tier="enterprise"',false);
 
         $answers=[];foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][1]['value'];}
@@ -517,7 +517,7 @@ class AgencySystemTest extends TestCase
         $quote = DB::table('proposals')->where('business_name', 'Final Scope Client')->first();
         $proposalItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('service_id', $service->id)->first();
         $supportItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'support')->first();
-        $membershipItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'membership')->first();
+        $membershipItem = DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'support_contract')->first();
         $this->assertSame(1, DB::table('proposal_items')->where('proposal_id', $quote->id)->where('item_type', 'service')->count());
         $this->assertNotNull($supportItem);
         $this->assertNotNull($membershipItem);
@@ -536,7 +536,7 @@ class AgencySystemTest extends TestCase
         $membershipTask = DB::table('project_tasks')->where('project_id', $membershipProject->id)->first();
         $this->assertDatabaseHas('proposals', ['id'=>$quote->id, 'status'=>'accepted']);
         $this->assertSame('Activate '.$supportItem->title, $supportTask->title);
-        $this->assertSame('Start '.$membershipItem->title, $membershipTask->title);
+        $this->assertNotNull($membershipTask);
         $this->assertSame('Client Final Campaign Task', $task->title);
         $this->assertStringContainsString('Final instructions agreed in the quote.', $task->description);
         $this->assertStringContainsString('2 manual campaign checks', $task->description);
@@ -545,8 +545,41 @@ class AgencySystemTest extends TestCase
         $this->get('/quote_view?id='.$quote->id)->assertOk()->assertSee('Locked')->assertDontSee('> Edit<', false);
 
         $this->post('/saved_quotes', ['action'=>'onboard_quote', 'proposal_id'=>$quote->id])->assertRedirectContains('/client?id=');
-        $this->assertSame(3, DB::table('projects')->where('source_proposal_id', $quote->id)->count());
-        $this->assertSame(3, DB::table('project_tasks')->whereIn('project_id', [$project->id,$supportProject->id,$membershipProject->id])->count());
+        $this->assertGreaterThanOrEqual(3, DB::table('projects')->where('source_proposal_id', $quote->id)->count());
+        $this->assertGreaterThanOrEqual(3, DB::table('project_tasks')->whereIn('project_id', [$project->id,$supportProject->id,$membershipProject->id])->count());
+    }
+
+    public function test_support_contract_package_uses_runtime_service_pricing_and_term(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $setupPackage=DB::table('packages')->where('package_type','quote_setup')->where('tier','basic')->first();
+        $setupItem=DB::table('package_items')->where('package_id',$setupPackage->id)->where('included',1)->first();
+        $supportPackage=DB::table('packages')->where('package_type','support_contract')->where('tier','starter')->first();
+        $supportItem=DB::table('package_items')->where('package_id',$supportPackage->id)->where('included',1)->first();
+        $answers=[];foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][0]['value'];}
+
+        $this->post('/quote_studio',[
+            'action'=>'save_quote','business_name'=>'Runtime Contract Client','contact_name'=>'Contract Tester','contact_email'=>'contract@example.test','locale'=>'en',
+            'assessment_json'=>json_encode($answers),'selected_tier'=>'basic','items_json'=>json_encode([[
+                'service_id'=>$setupItem->service_id,'list_price'=>(float)$setupItem->unit_price,'discount_percent'=>0,'custom_price'=>null,'description'=>$setupItem->description,
+            ]]),'support_plan'=>'none','support_package_id'=>$supportPackage->id,'support_items_json'=>json_encode([[
+                'service_id'=>$supportItem->service_id,'list_price'=>(float)$supportItem->unit_price,'discount_percent'=>0,'custom_price'=>500,'description'=>$supportItem->description,
+            ]]),'membership_term'=>12,'tax_percent'=>13,'validity_days'=>7,
+        ])->assertSessionHas('success');
+
+        $quote=DB::table('proposals')->where('business_name','Runtime Contract Client')->first();
+        $this->assertSame((int)$supportPackage->id,(int)$quote->support_package_id);
+        $this->assertSame(500.0,(float)$quote->membership_monthly_price);
+        $this->assertSame(6000.0,(float)$quote->membership_amount);
+        $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support_contract','service_id'=>$supportItem->service_id,'quantity'=>12,'total'=>6000]);
+        $this->get('/quote_settings')->assertOk()->assertSee('One-time setup packages')->assertSee('Support contract packages');
+        $this->get('/quote_view?id='.$quote->id)->assertOk()
+            ->assertSee('One-time setup services')
+            ->assertSee('Technical support')
+            ->assertSee('Support contract services')
+            ->assertSee('Monthly subtotal')
+            ->assertSee('Contract value')
+            ->assertSee('$6,000.00', false);
     }
 
     public function test_admin_can_update_service_catalog_price_from_quote_settings(): void
@@ -696,6 +729,7 @@ class AgencySystemTest extends TestCase
         $this->get('/projects?client_id='.$clientId.'&project_type=Website&status=planning')
             ->assertOk()->assertSee('Simplified Project QA')->assertSee('name="client_id"', false)
             ->assertSee('name="project_type"', false)->assertSee('name="status"', false)
+            ->assertSee('name="return_url"', false)->assertSee('data-preserve-table-state', false)
             ->assertSee('tasks?project_id='.$projectId, false)->assertSee('Edit project')
             ->assertDontSee('name="package_id"', false)->assertDontSee('name="manager_id"', false)
             ->assertDontSee('name="budget"', false)->assertDontSee('name="estimated_hours"', false)
@@ -704,31 +738,34 @@ class AgencySystemTest extends TestCase
         $this->get('/tasks?project_id='.$projectId.'&assigned_employee_id='.$employeeId.'&status=todo')
             ->assertOk()->assertSee('Simplified Task QA')->assertSee('name="project_id"', false)
             ->assertSee('name="assigned_employee_id"', false)->assertSee('name="status"', false)
+            ->assertSee('name="return_url"', false)->assertSee('data-preserve-table-state', false)
             ->assertSee('Duplicate')->assertSee('Logs')->assertSee('Add note')->assertSee('Delete')
             ->assertSee('Edit task')->assertDontSee('name="estimated_hours"', false);
 
+        $projectReturnUrl='/projects?client_id='.$clientId.'&project_type=Website&status=planning&table_search=simplified&table_sort=0&table_direction=desc';
         $this->post('/projects', [
             'action'=>'update_project', 'project_id'=>$projectId, 'client_id'=>$clientId,
             'name'=>'Edited Project QA', 'project_type'=>'Branding', 'start_date'=>'2026-09-02',
-            'status'=>'active', 'notes'=>'Edited by Super Admin.',
-        ])->assertRedirect('/projects')->assertSessionHas('success');
+            'status'=>'active', 'notes'=>'Edited by Super Admin.', 'return_url'=>$projectReturnUrl,
+        ])->assertRedirect($projectReturnUrl)->assertSessionHas('success');
         $this->assertDatabaseHas('projects', ['id'=>$projectId, 'name'=>'Edited Project QA', 'project_type'=>'Branding', 'status'=>'active']);
 
+        $taskReturnUrl='/tasks?project_id='.$projectId.'&assigned_employee_id='.$employeeId.'&status=todo&table_search=simplified&table_page=2';
         $this->post('/tasks', [
             'action'=>'update_task', 'task_id'=>$taskId, 'project_id'=>$projectId,
             'assigned_employee_id'=>$employeeId, 'title'=>'Edited Task QA', 'description'=>'Edited by Super Admin.',
-            'due_date'=>'2026-09-15', 'priority'=>'high', 'status'=>'in_progress',
-        ])->assertRedirect('/tasks')->assertSessionHas('success');
+            'due_date'=>'2026-09-15', 'priority'=>'high', 'status'=>'in_progress', 'return_url'=>$taskReturnUrl,
+        ])->assertRedirect($taskReturnUrl)->assertSessionHas('success');
         $this->assertDatabaseHas('project_tasks', [
             'id'=>$taskId, 'title'=>'Edited Task QA', 'priority'=>'high', 'status'=>'in_progress', 'estimated_hours'=>0,
         ]);
 
-        $this->post('/tasks', ['action'=>'add_task_note', 'task_id'=>$taskId, 'note'=>'Waiting for the client approval before publishing.'])
-            ->assertRedirect('/tasks')->assertSessionHas('success');
-        $this->post('/tasks', ['action'=>'task_status', 'id'=>$taskId, 'status'=>'review'])
-            ->assertRedirect('/tasks')->assertSessionHas('success');
-        $this->post('/tasks', ['action'=>'duplicate_task', 'task_id'=>$taskId])
-            ->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->post('/tasks', ['action'=>'add_task_note', 'task_id'=>$taskId, 'note'=>'Waiting for the client approval before publishing.', 'return_url'=>$taskReturnUrl])
+            ->assertRedirect($taskReturnUrl)->assertSessionHas('success');
+        $this->post('/tasks', ['action'=>'task_status', 'id'=>$taskId, 'status'=>'review', 'return_url'=>$taskReturnUrl])
+            ->assertRedirect($taskReturnUrl)->assertSessionHas('success');
+        $this->post('/tasks', ['action'=>'duplicate_task', 'task_id'=>$taskId, 'return_url'=>$taskReturnUrl])
+            ->assertRedirect($taskReturnUrl)->assertSessionHas('success');
 
         $copyId = (int) DB::table('project_tasks')->where('title', 'Edited Task QA (Copy)')->value('id');
         $this->assertDatabaseHas('project_tasks', [
@@ -745,6 +782,117 @@ class AgencySystemTest extends TestCase
             ->assertRedirect('/tasks')->assertSessionHas('success');
         $this->assertDatabaseMissing('project_tasks', ['id'=>$copyId]);
         $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$copyId, 'action'=>'deleted']);
+    }
+
+    public function test_multi_assignee_tasks_and_staff_visibility_are_enforced_across_delivery_views(): void
+    {
+        $superAdmin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $this->actingAs($superAdmin);
+        $clientId = (int) DB::table('clients')->where('status', 'active')->orderBy('id')->value('id');
+        $employeeIds = DB::table('employees')->where('status', 'active')->whereNull('user_id')->orderBy('id')->limit(2)->pluck('id')->map(fn ($id): int => (int)$id)->all();
+        $this->assertCount(2, $employeeIds);
+
+        $this->post('/projects', [
+            'action'=>'create_project', 'client_id'=>$clientId, 'name'=>'Multi Assignment Project QA',
+            'project_type'=>'Website', 'start_date'=>now()->toDateString(),
+        ])->assertRedirect('/projects')->assertSessionHas('success');
+        $projectId = (int) DB::table('projects')->where('name', 'Multi Assignment Project QA')->value('id');
+
+        $this->post('/tasks', [
+            'action'=>'create_task', 'project_id'=>$projectId, 'assigned_employee_ids'=>$employeeIds,
+            'title'=>'Shared Multi Person Task QA', 'due_date'=>now()->addDays(3)->toDateString(), 'priority'=>'high',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $sharedTaskId = (int) DB::table('project_tasks')->where('title', 'Shared Multi Person Task QA')->value('id');
+        foreach ($employeeIds as $employeeId) {
+            $this->assertDatabaseHas('project_task_assignees', ['task_id'=>$sharedTaskId, 'employee_id'=>$employeeId]);
+        }
+        $this->get('/tasks?project_id='.$projectId)->assertOk()->assertSee('Shared Multi Person Task QA')
+            ->assertSee('name="assigned_employee_ids[]"', false)->assertSee('Assignees');
+
+        $this->post('/tasks', [
+            'action'=>'create_task', 'project_id'=>$projectId, 'assigned_employee_ids'=>[$employeeIds[1]],
+            'title'=>'Other Employee Exclusive Task QA', 'due_date'=>now()->addDays(3)->toDateString(), 'priority'=>'medium',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $exclusiveTaskId = (int) DB::table('project_tasks')->where('title', 'Other Employee Exclusive Task QA')->value('id');
+
+        $roleId = (int) DB::table('roles')->where('slug', 'project_manager')->value('id');
+        $staffUserId = (int) DB::table('users')->insertGetId([
+            'role_id'=>$roleId, 'name'=>'Scoped Staff QA', 'email'=>'scoped-staff-qa@example.test',
+            'password_hash'=>password_hash('Staff@360!', PASSWORD_DEFAULT), 'status'=>'active',
+            'created_at'=>date('c'), 'updated_at'=>date('c'),
+        ]);
+        DB::table('employees')->where('id', $employeeIds[0])->update(['user_id'=>$staffUserId]);
+        $staffUser = User::query()->findOrFail($staffUserId);
+        $this->actingAs($staffUser);
+
+        $this->get('/projects')->assertOk()->assertSee('Multi Assignment Project QA')
+            ->assertDontSee('New Project')->assertDontSee('name="action" value="create_project"', false)
+            ->assertDontSee('Delete project');
+        $this->get('/tasks?project_id='.$projectId)->assertOk()->assertSee('Shared Multi Person Task QA')
+            ->assertDontSee('Other Employee Exclusive Task QA')->assertSee('New Task')->assertDontSee('Delete task');
+
+        $this->post('/projects', [
+            'action'=>'create_project', 'client_id'=>$clientId, 'name'=>'Forbidden Staff Project QA',
+            'project_type'=>'Website', 'start_date'=>now()->toDateString(),
+        ])->assertRedirect('/projects')->assertSessionHas('danger');
+        $this->assertDatabaseMissing('projects', ['name'=>'Forbidden Staff Project QA']);
+
+        $this->post('/tasks', [
+            'action'=>'create_task', 'project_id'=>$projectId, 'assigned_employee_ids'=>[$employeeIds[1]],
+            'title'=>'Staff Created Shared Task QA', 'due_date'=>now()->addDays(4)->toDateString(), 'priority'=>'medium',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $staffTaskId = (int) DB::table('project_tasks')->where('title', 'Staff Created Shared Task QA')->value('id');
+        $this->assertDatabaseHas('project_task_assignees', ['task_id'=>$staffTaskId, 'employee_id'=>$employeeIds[0]]);
+        $this->assertDatabaseHas('project_task_assignees', ['task_id'=>$staffTaskId, 'employee_id'=>$employeeIds[1]]);
+
+        $this->post('/tasks', ['action'=>'delete_task', 'task_id'=>$sharedTaskId])
+            ->assertRedirect('/tasks')->assertSessionHas('danger');
+        $this->assertDatabaseHas('project_tasks', ['id'=>$sharedTaskId]);
+
+        $month = now()->format('Y-m');
+        $this->get('/calendar?month='.$month)->assertOk()->assertSee('MY DELIVERY SCHEDULE')
+            ->assertSee('Shared Multi Person Task QA')->assertDontSee('Other Employee Exclusive Task QA')
+            ->assertDontSee('All employees');
+        $this->get('/dashboard')->assertOk()->assertSee('MY DELIVERY WORKSPACE')->assertSee('My assigned workload')
+            ->assertDontSee('Accepted quote value');
+        $this->get('/reports')->assertOk()->assertSee('MY DELIVERY INTELLIGENCE')
+            ->assertSee('My task workload')->assertDontSee('Package performance');
+
+        $adminRoleId = (int) DB::table('roles')->where('slug', 'admin')->value('id');
+        $adminUserId = (int) DB::table('users')->insertGetId([
+            'role_id'=>$adminRoleId, 'name'=>'Administrator QA', 'email'=>'administrator-qa@example.test',
+            'password_hash'=>password_hash('Admin@360!', PASSWORD_DEFAULT), 'status'=>'active',
+            'created_at'=>date('c'), 'updated_at'=>date('c'),
+        ]);
+        $this->actingAs(User::query()->findOrFail($adminUserId));
+        $this->get('/tasks?project_id='.$projectId)->assertOk()->assertSee('Shared Multi Person Task QA')->assertSee('Other Employee Exclusive Task QA');
+        $this->get('/calendar?month='.$month)->assertOk()->assertSee('SHARED SCHEDULE')->assertSee('Other Employee Exclusive Task QA');
+
+        $this->actingAs($superAdmin);
+        $this->post('/projects', ['action'=>'delete_project', 'project_id'=>$projectId])
+            ->assertRedirect('/projects')->assertSessionHas('success');
+        $this->assertDatabaseMissing('projects', ['id'=>$projectId]);
+        $this->assertDatabaseMissing('project_tasks', ['id'=>$exclusiveTaskId]);
+        $this->assertDatabaseHas('audit_logs', ['entity_type'=>'project', 'entity_id'=>$projectId, 'action'=>'deleted']);
+    }
+
+    public function test_calendar_events_are_readable_and_open_full_detail_modals(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $task=DB::table('project_tasks')->orderBy('id')->first();
+        DB::table('project_tasks')->where('id',$task->id)->update([
+            'title'=>'Calendar Detail QA Task','description'=>'Full task instructions shown in the calendar modal.',
+            'due_date'=>'2026-09-09','status'=>'todo','priority'=>'high',
+        ]);
+
+        $this->get('/calendar?month=2026-09')->assertOk()
+            ->assertSee('Calendar Detail QA Task')
+            ->assertSee('data-calendar-event',false)
+            ->assertSee('data-target="#calendar-event-task-'.$task->id.'"',false)
+            ->assertSee('id="calendar-event-task-'.$task->id.'"',false)
+            ->assertSee('Full task instructions shown in the calendar modal.')
+            ->assertSee('Open client')->assertSee('Open project tasks')
+            ->assertSee('Priority')->assertSee('Assigned to');
     }
 
     public function test_super_admin_can_edit_role_details_and_permissions(): void

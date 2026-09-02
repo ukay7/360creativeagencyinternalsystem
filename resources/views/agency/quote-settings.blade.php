@@ -1,19 +1,20 @@
 <?php
 $s = $quoteSettings;
-$packageOptions = array_map(static fn(array $package): array => ['id'=>(int)$package['id'],'name'=>$package['name'],'tier'=>$package['tier']], $s['packages']);
+$allPackages = array_merge($s['packages'], $s['supportPackages']);
+$packageOptions = array_map(static fn(array $package): array => ['id'=>(int)$package['id'],'name'=>$package['name'],'tier'=>$package['tier'],'package_type'=>$package['package_type']], $allPackages);
 ?>
 
 <div class="quote-page-heading">
-    <div><span class="eyebrow">QUOTE CATALOG</span><h1>Quote Settings</h1><p>Control package pricing, service delivery items, task schedules, support, and memberships.</p></div>
+    <div><span class="eyebrow">QUOTE CATALOG</span><h1>Quote Settings</h1><p>Build one-time setup and ongoing support-contract packages from one shared service catalog.</p></div>
     <button class="btn btn-primary" data-toggle="modal" data-target="#quote-service-modal" data-service-id=""><i class="fal fa-plus mr-1"></i> Add service</button>
 </div>
 
 <section class="quote-settings-section" id="setup-packages">
-    <header><div><span class="quote-heading-icon"><i class="fal fa-box-open"></i></span><div><h2>Setup packages</h2><p>Create packages and control service pricing, client scope, and delivery-item values.</p></div></div><button class="btn btn-primary btn-sm" data-toggle="modal" data-target="#quote-package-modal" data-package=""><i class="fal fa-plus mr-1"></i> Add package</button></header>
+    <header><div><span class="quote-heading-icon"><i class="fal fa-box-open"></i></span><div><h2>One-time setup packages</h2><p>Create packages and control one-time service pricing, client scope, and delivery-item values.</p></div></div><button class="btn btn-primary btn-sm" data-toggle="modal" data-target="#quote-package-modal" data-package="" data-package-type="quote_setup"><i class="fal fa-plus mr-1"></i> Add setup package</button></header>
     <div class="quote-package-settings-grid">
         <?php foreach($s['packages'] as $package): ?>
             <article class="quote-package-settings-card">
-                <div class="quote-package-settings-head"><div><span><?= e(strtoupper($package['tier'])) ?></span><h3><?= e($package['name']) ?></h3><p><?= e($package['description']) ?></p></div><button class="quote-icon-button" data-toggle="modal" data-target="#quote-package-modal" data-package='<?= e(json_encode($package,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>' title="Edit package"><i class="fal fa-pencil"></i></button></div>
+                <div class="quote-package-settings-head"><div><span><?= e(strtoupper($package['tier'])) ?></span><h3><?= e($package['name']) ?></h3><p><?= e($package['description']) ?></p></div><button class="quote-icon-button" data-toggle="modal" data-target="#quote-package-modal" data-package-type="quote_setup" data-package='<?= e(json_encode($package,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>' title="Edit package"><i class="fal fa-pencil"></i></button></div>
                 <div class="quote-package-item-list">
                     <?php if(!$package['items']): ?><p class="quote-package-empty">No services yet. Add the first service below.</p><?php endif; ?>
                     <?php foreach($package['items'] as $item): ?>
@@ -22,6 +23,25 @@ $packageOptions = array_map(static fn(array $package): array => ['id'=>(int)$pac
                     <?php endforeach; ?>
                 </div>
                 <footer class="quote-package-card-actions"><button class="btn btn-outline-secondary btn-sm" data-toggle="modal" data-target="#quote-package-add-item-modal" data-package-id="<?= (int)$package['id'] ?>" data-package-name="<?= e($package['name']) ?>"><i class="fal fa-plus mr-1"></i> Add service to package</button></footer>
+            </article>
+        <?php endforeach; ?>
+    </div>
+</section>
+
+<section class="quote-settings-section" id="support-contract-packages">
+    <header><div><span class="quote-heading-icon"><i class="fal fa-file-signature"></i></span><div><h2>Support contract packages</h2><p>Build monthly packages with their own services, prices, scopes, and delivery items. The contract term is selected at quote time.</p></div></div><button class="btn btn-primary btn-sm" data-toggle="modal" data-target="#quote-package-modal" data-package="" data-package-type="support_contract"><i class="fal fa-plus mr-1"></i> Add support package</button></header>
+    <div class="quote-package-settings-grid">
+        <?php foreach($s['supportPackages'] as $package): ?>
+            <article class="quote-package-settings-card quote-support-package-card">
+                <div class="quote-package-settings-head"><div><span>MONTHLY · <?= e(strtoupper($package['tier'])) ?></span><h3><?= e($package['name']) ?></h3><p><?= e($package['description']) ?></p></div><button class="quote-icon-button" data-toggle="modal" data-target="#quote-package-modal" data-package-type="support_contract" data-package='<?= e(json_encode($package,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>' title="Edit support package"><i class="fal fa-pencil"></i></button></div>
+                <div class="quote-package-item-list">
+                    <?php if(!$package['items']): ?><p class="quote-package-empty">No monthly services yet. Add the first service below.</p><?php endif; ?>
+                    <?php foreach($package['items'] as $item): ?>
+                        <?php $deliveryItems=array_values(array_filter($item['work_items']??[],static fn(array $work):bool=>(bool)$work['included'])); ?>
+                        <div><div><strong><?= e($item['name']) ?></strong><small><?= e($item['description']?:$item['service_description']) ?></small><span class="quote-work-count"><i class="fal fa-tasks"></i> <?= count($deliveryItems) ?> package items</span></div><b><?= money($item['unit_price']) ?>/mo</b><button class="quote-icon-button" data-toggle="modal" data-target="#quote-package-item-modal" data-item='<?= e(json_encode($item,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>' title="Edit package service and items"><i class="fal fa-pencil"></i></button><form method="post" action="<?= e(url('quote_settings')) ?>" onsubmit="return confirm('Remove this service from the support package?')">@csrf<input type="hidden" name="action" value="remove_quote_package_item"><input type="hidden" name="package_item_id" value="<?= (int)$item['id'] ?>"><button class="quote-icon-button quote-remove-button" title="Remove item"><i class="fal fa-trash-alt"></i></button></form></div>
+                    <?php endforeach; ?>
+                </div>
+                <footer class="quote-package-card-actions"><button class="btn btn-outline-secondary btn-sm" data-toggle="modal" data-target="#quote-package-add-item-modal" data-package-id="<?= (int)$package['id'] ?>" data-package-name="<?= e($package['name']) ?>"><i class="fal fa-plus mr-1"></i> Add monthly service</button></footer>
             </article>
         <?php endforeach; ?>
     </div>
@@ -37,8 +57,8 @@ $packageOptions = array_map(static fn(array $package): array => ['id'=>(int)$pac
 </section>
 
 <section class="quote-settings-section">
-    <header><div><span class="quote-heading-icon"><i class="fal fa-shield-check"></i></span><div><h2>Support &amp; monthly membership</h2><p>Support is calculated from setup; membership is a monthly price.</p></div></div></header>
-    <div class="quote-plan-settings-grid"><?php foreach($s['supportPlans'] as $plan): ?><article><span>SUPPORT</span><h3><?= e($plan['name']) ?></h3><p><?= e($plan['description']) ?></p><strong><?= (float)$plan['rate_percent'] ?>% × <?= (float)$plan['multiplier'] ?></strong><button class="quote-icon-button" data-toggle="modal" data-target="#quote-plan-modal" data-type="support" data-plan='<?= e(json_encode($plan,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>'><i class="fal fa-pencil"></i></button></article><?php endforeach; ?><?php foreach($s['memberships'] as $plan): ?><article><span>MEMBERSHIP</span><h3><?= e($plan['name']) ?></h3><p><?= e($plan['description']) ?></p><strong><?= money($plan['monthly_price']) ?>/mo</strong><button class="quote-icon-button" data-toggle="modal" data-target="#quote-plan-modal" data-type="membership" data-plan='<?= e(json_encode($plan,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>'><i class="fal fa-pencil"></i></button></article><?php endforeach; ?></div>
+    <header><div><span class="quote-heading-icon"><i class="fal fa-shield-check"></i></span><div><h2>Technical support plans</h2><p>These percentage-based plans remain calculated from the selected one-time setup subtotal.</p></div></div></header>
+    <div class="quote-plan-settings-grid"><?php foreach($s['supportPlans'] as $plan): ?><article><span>TECHNICAL SUPPORT</span><h3><?= e($plan['name']) ?></h3><p><?= e($plan['description']) ?></p><strong><?= (float)$plan['rate_percent'] ?>% × <?= (float)$plan['multiplier'] ?></strong><button class="quote-icon-button" data-toggle="modal" data-target="#quote-plan-modal" data-type="support" data-plan='<?= e(json_encode($plan,JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT)) ?>'><i class="fal fa-pencil"></i></button></article><?php endforeach; ?></div>
 </section>
 
 <div class="modal fade" id="quote-service-modal" tabindex="-1"><div class="modal-dialog modal-xl quote-service-builder-modal"><form class="modal-content" method="post" action="<?= e(url('quote_settings')) ?>">@csrf
@@ -81,7 +101,7 @@ window.addEventListener('DOMContentLoaded',function(){
     function renumberWorkItems(){Array.prototype.forEach.call(workflowHost.children,function(card,index){card.querySelector('.service-work-item-number').textContent=index+1;});workflowEmpty.hidden=workflowHost.children.length>0;}function renderWorkItems(items){workflowHost.innerHTML='';workItemIndex=0;(items||[]).forEach(addWorkItem);renumberWorkItems();}
     document.getElementById('add-service-work-item').addEventListener('click',function(){addWorkItem({schedule_type:'one_time',frequency:'weekly'});});
     $('#quote-service-modal').on('show.bs.modal',function(e){var form=this.querySelector('form'),id=Number(e.relatedTarget.getAttribute('data-service-id')||0),source=(settingsData.services||[]).find(function(row){return Number(row.id)===id;}),data=source?JSON.parse(JSON.stringify(source)):{};form.reset();data.service_id=data.id||'';fill(form,data);form.querySelector('.modal-title').textContent=data.id?'Edit service & item templates':'Add service';if(!data.id){form.elements.active.checked=true;form.elements.taxable.checked=true;form.elements.quote_enabled.checked=true;}renderWorkItems(data.work_items||[]);});
-    $('#quote-package-modal').on('show.bs.modal',function(e){var form=this.querySelector('form'),raw=e.relatedTarget.getAttribute('data-package'),data=raw?JSON.parse(raw):{};form.reset();data.package_id=data.id||'';fill(form,data);form.querySelector('.modal-title').textContent=data.id?'Edit setup package':'Add setup package';if(!data.id){form.elements.active.checked=true;form.elements.display_order.value=99;}else{form.elements.active.checked=Number(data.active)===1;}});
+    $('#quote-package-modal').on('show.bs.modal',function(e){var form=this.querySelector('form'),button=e.relatedTarget,raw=button.getAttribute('data-package'),data=raw?JSON.parse(raw):{},type=button.getAttribute('data-package-type')||data.package_type||'quote_setup',typeName=type==='support_contract'?'support contract':'setup';form.reset();var typeInput=form.elements.package_type;if(!typeInput){typeInput=document.createElement('input');typeInput.type='hidden';typeInput.name='package_type';form.appendChild(typeInput);}typeInput.value=type;data.package_id=data.id||'';fill(form,data);typeInput.value=type;form.querySelector('.modal-title').textContent=(data.id?'Edit ':'Add ')+typeName+' package';if(!data.id){form.elements.active.checked=true;form.elements.display_order.value=99;}else{form.elements.active.checked=Number(data.active)===1;}});
     $('#quote-package-add-item-modal').on('show.bs.modal',function(e){var form=this.querySelector('form'),button=e.relatedTarget;form.reset();form.elements.package_id.value=button.getAttribute('data-package-id');form.querySelector('.modal-title').textContent='Add service to '+button.getAttribute('data-package-name');form.elements.included.checked=true;form.elements.sort_order.value=99;var select=form.elements.service_id;function applyService(){var option=select.options[select.selectedIndex],service=JSON.parse(option.getAttribute('data-service')||'{}');form.elements.unit_price.value=service.default_price||0;form.elements.description.value=service.description||'';form.elements.description_ar.value=service.description_ar||'';form.elements.description_he.value=service.description_he||'';renderPackageWorkItems(document.getElementById('package-add-work-items'),service.work_items||[]);}select.onchange=applyService;applyService();});
     $('#quote-package-item-modal').on('show.bs.modal',function(e){var data=JSON.parse(e.relatedTarget.getAttribute('data-item')),form=this.querySelector('form');data.package_item_id=data.id;form.reset();fill(form,data);renderPackageWorkItems(document.getElementById('package-edit-work-items'),data.work_items||[]);});
     $('#quote-plan-modal').on('show.bs.modal',function(e){var form=this.querySelector('form'),type=e.relatedTarget.getAttribute('data-type'),data=JSON.parse(e.relatedTarget.getAttribute('data-plan'));data.plan_id=data.id;data.plan_type=type;form.reset();fill(form,data);form.querySelector('.support-plan-fields').style.display=type==='support'?'contents':'none';form.querySelector('.membership-plan-fields').style.display=type==='membership'?'contents':'none';});

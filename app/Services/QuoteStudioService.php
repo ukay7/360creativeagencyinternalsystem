@@ -16,15 +16,8 @@ final class QuoteStudioService
 
     public function builderData(int $proposalId = 0): array
     {
-        $packages = $this->db->all("SELECT p.*,pp.base_price FROM packages p LEFT JOIN package_pricing pp ON pp.package_id=p.id AND pp.effective_to IS NULL WHERE p.package_type='quote_setup' AND p.active=1 ORDER BY p.display_order,p.id");
-        foreach ($packages as &$package) {
-            $package['items'] = $this->db->all("SELECT pi.*,s.name,s.name_ar,s.name_he,s.description AS service_description,s.description_ar AS service_description_ar,s.description_he AS service_description_he,sc.name AS category FROM package_items pi JOIN services s ON s.id=pi.service_id JOIN service_categories sc ON sc.id=s.category_id WHERE pi.package_id=? AND s.active=1 AND s.quote_enabled=1 ORDER BY pi.sort_order,pi.id", [(int)$package['id']]);
-            foreach ($package['items'] as &$item) {
-                $item['work_items'] = $this->resolvedWorkItems((int)$item['service_id'], (int)$package['id']);
-            }
-            unset($item);
-        }
-        unset($package);
+        $packages = $this->packagesByType('quote_setup');
+        $supportPackages = $this->packagesByType('support_contract');
 
         $proposal = $proposalId > 0 ? $this->quote($proposalId) : null;
         $relationships = $this->relationshipOptions();
@@ -35,8 +28,8 @@ final class QuoteStudioService
             'assessment' => config('quote_studio.assessment'),
             'recommendation' => config('quote_studio.recommendation'),
             'packages' => $packages,
+            'supportPackages' => $supportPackages,
             'supportPlans' => $this->db->all('SELECT * FROM quote_support_plans WHERE active=1 ORDER BY sort_order,id'),
-            'memberships' => $this->db->all('SELECT * FROM quote_memberships WHERE active=1 ORDER BY sort_order,id'),
             'relationships' => $relationships,
             'clients' => array_values(array_filter($relationships, static fn(array $row): bool => $row['type'] === 'client')),
             'proposal' => $proposal,
@@ -69,7 +62,7 @@ final class QuoteStudioService
 
     public function quote(int $id): ?array
     {
-        $quote = $this->db->first('SELECT p.*,pk.name AS package_name,pk.name_ar AS package_name_ar,pk.name_he AS package_name_he,pk.description AS package_description,pk.description_ar AS package_description_ar,pk.description_he AS package_description_he FROM proposals p LEFT JOIN packages pk ON pk.id=p.package_id WHERE p.id=? AND p.builder_version IS NOT NULL', [$id]);
+        $quote = $this->db->first('SELECT p.*,pk.name AS package_name,pk.name_ar AS package_name_ar,pk.name_he AS package_name_he,pk.description AS package_description,pk.description_ar AS package_description_ar,pk.description_he AS package_description_he,sp.name AS support_package_name,sp.name_ar AS support_package_name_ar,sp.name_he AS support_package_name_he,sp.description AS support_package_description,sp.description_ar AS support_package_description_ar,sp.description_he AS support_package_description_he FROM proposals p LEFT JOIN packages pk ON pk.id=p.package_id LEFT JOIN packages sp ON sp.id=p.support_package_id WHERE p.id=? AND p.builder_version IS NOT NULL', [$id]);
         if (! $quote) { return null; }
         $quote['assessment'] = json_decode((string)($quote['assessment_data'] ?? '{}'), true) ?: [];
         $quote['items'] = $this->db->all('SELECT * FROM proposal_items WHERE proposal_id=? ORDER BY sort_order,id', [$id]);
@@ -101,6 +94,7 @@ final class QuoteStudioService
         $selectedTier = substr(trim((string)($input['selected_tier'] ?? 'basic')), 0, 20) ?: 'basic';
         $assessment = $this->decodeJson($input['assessment_json'] ?? '{}', 'assessment');
         $items = $this->decodeJson($input['items_json'] ?? '[]', 'service selection');
+        $supportItems = $this->decodeJson($input['support_items_json'] ?? '[]', 'support contract selection');
         if (! is_array($items) || count($items) === 0) { throw new InvalidArgumentException('Select at least one setup service.'); }
 
         $score = $this->assessmentScore($assessment);
@@ -108,44 +102,32 @@ final class QuoteStudioService
         $package = $this->db->first("SELECT id FROM packages WHERE package_type='quote_setup' AND tier=? AND active=1 LIMIT 1", [$selectedTier]);
         if (! $package) { throw new InvalidArgumentException('The selected setup tier is not available.'); }
 
-        $normalizedItems = [];
-        $setupSubtotal = 0.0;
-        foreach ($items as $index => $item) {
-            if (! is_array($item) || empty($item['service_id'])) { continue; }
-            $catalog = $this->db->first('SELECT s.id,s.name,s.name_ar,s.name_he,s.description,s.description_ar,s.description_he,sc.name AS category FROM services s JOIN service_categories sc ON sc.id=s.category_id WHERE s.id=? AND s.active=1 AND s.quote_enabled=1', [(int)$item['service_id']]);
-            if (! $catalog) { continue; }
-            $listPrice = max(0, (float)($item['list_price'] ?? 0));
-            $discount = min(100, max(0, (float)($item['discount_percent'] ?? 0)));
-            $customPrice = ($item['custom_price'] ?? '') !== '' && $item['custom_price'] !== null ? max(0, (float)$item['custom_price']) : null;
-            $finalPrice = $customPrice ?? round($listPrice * (1 - $discount / 100), 2);
-            $description = trim((string)($item['description'] ?? $catalog['description'] ?? ''));
-            $descriptionAr = trim((string)($item['description_ar'] ?? $catalog['description_ar'] ?? ''));
-            $descriptionHe = trim((string)($item['description_he'] ?? $catalog['description_he'] ?? ''));
-            $normalizedItems[] = [
-                'service_id'=>(int)$catalog['id'],'item_type'=>'service','title'=>$catalog['name'],'title_ar'=>$catalog['name_ar'],'title_he'=>$catalog['name_he'],
-                'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'category'=>$catalog['category'],
-                'quantity'=>1,'unit_price'=>$listPrice,'discount_percent'=>$discount,'total'=>$finalPrice,'sort_order'=>$index + 1,
-                'work_items'=>$this->normalizeQuoteWorkItems((array)($item['work_items'] ?? []), (int)$catalog['id'], (int)$package['id']),
-            ];
-            $setupSubtotal += $finalPrice;
-        }
+        [$normalizedItems,$setupSubtotal] = $this->normalizePackageSelections($items, (int)$package['id'], 'service', 1);
         if (! $normalizedItems) { throw new InvalidArgumentException('The selected services are no longer available.'); }
 
         $support = $this->db->first('SELECT * FROM quote_support_plans WHERE code=? AND active=1', [(string)($input['support_plan'] ?? 'none')]) ?: $this->db->first("SELECT * FROM quote_support_plans WHERE code='none'");
-        $membership = $this->db->first('SELECT * FROM quote_memberships WHERE code=? AND active=1', [(string)($input['membership_plan'] ?? 'none')]) ?: $this->db->first("SELECT * FROM quote_memberships WHERE code='none'");
+        $supportPackageId = max(0, (int)($input['support_package_id'] ?? 0));
+        $legacyMembershipCode = trim((string)($input['membership_plan'] ?? 'none'));
+        if (! $supportPackageId && ! in_array($legacyMembershipCode, ['', 'none', 'custom'], true)) {
+            $supportPackageId = (int)($this->db->scalar("SELECT id FROM packages WHERE package_type='support_contract' AND tier=? AND active=1 LIMIT 1", [$legacyMembershipCode]) ?: 0);
+        }
+        $supportPackage = $supportPackageId ? $this->db->first("SELECT * FROM packages WHERE id=? AND package_type='support_contract' AND active=1", [$supportPackageId]) : null;
+        if ($supportPackageId && ! $supportPackage) { throw new InvalidArgumentException('The selected support contract package is not available.'); }
+        if ($supportPackage && (! is_array($supportItems) || ! $supportItems)) { $supportItems=$this->defaultPackageSelections($supportPackageId); }
+        [$normalizedSupportItems,$membershipMonthlyPrice] = $supportPackage
+            ? $this->normalizePackageSelections(is_array($supportItems) ? $supportItems : [], $supportPackageId, 'support_contract', 1000)
+            : [[],0.0];
+        if ($supportPackage && ! $normalizedSupportItems) { throw new InvalidArgumentException('Select at least one support contract service.'); }
+        $legacyCustomMembership = ! $supportPackage && $legacyMembershipCode === 'custom';
         $customSupport = (string)$support['code'] === 'custom';
         $supportName = $customSupport ? (trim((string)($input['custom_support_name'] ?? '')) ?: 'Custom support') : (string)$support['name'];
         $supportDuration = (string)$support['code'] === 'none' ? 0 : ($customSupport ? min(60, max(1, (int)($input['custom_support_duration'] ?? 3))) : (int)$support['duration_months']);
         $supportRatePercent = $customSupport ? min(100, max(0, (float)($input['custom_support_rate_percent'] ?? 0))) : (float)$support['rate_percent'];
         $supportMultiplier = $customSupport ? $supportDuration / 3 : (float)$support['multiplier'];
         $supportAmount = round($setupSubtotal * ($supportRatePercent / 100) * $supportMultiplier, 2);
-        $membershipDuration = (string)$membership['code'] === 'none' ? 0 : min(60, max(1, (int)($input['membership_term'] ?? 3)));
-        $membershipName = (string)$membership['code'] === 'custom'
-            ? (trim((string)($input['custom_membership_name'] ?? '')) ?: 'Custom social media plan')
-            : (string)$membership['name'];
-        $membershipMonthlyPrice = (string)$membership['code'] === 'custom'
-            ? round(max(0, (float)($input['custom_membership_monthly_price'] ?? 0)), 2)
-            : (float)$membership['monthly_price'];
+        $membershipDuration = ($supportPackage || $legacyCustomMembership) ? min(60, max(1, (int)($input['membership_term'] ?? 3))) : 0;
+        $membershipName = $supportPackage ? (string)$supportPackage['name'] : ($legacyCustomMembership ? (trim((string)($input['custom_membership_name']??'')) ?: 'Custom support contract') : null);
+        if ($legacyCustomMembership) { $membershipMonthlyPrice=round(max(0,(float)($input['custom_membership_monthly_price']??0)),2); }
         $membershipAmount = round($membershipMonthlyPrice * $membershipDuration, 2);
         $subtotal = round($setupSubtotal + $supportAmount + $membershipAmount, 2);
         $taxPercent = min(100, max(0, (float)($input['tax_percent'] ?? 13)));
@@ -157,18 +139,18 @@ final class QuoteStudioService
         if ($proposalId && ! $existing) { throw new InvalidArgumentException('The quote could not be found.'); }
         if ($existing && ($existing['status'] ?? '') === 'accepted') { throw new InvalidArgumentException('Accepted quotes are locked. Create a new revision to make changes.'); }
 
-        return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$setupSubtotal,$support,$customSupport,$supportName,$supportDuration,$supportRatePercent,$supportAmount,$membership,$membershipName,$membershipDuration,$membershipMonthlyPrice,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
+        return $this->db->transaction(function () use ($input,$businessName,$contactName,$email,$locale,$selectedTier,$assessment,$score,$recommendedTier,$package,$normalizedItems,$normalizedSupportItems,$setupSubtotal,$support,$customSupport,$supportName,$supportDuration,$supportRatePercent,$supportAmount,$supportPackage,$supportPackageId,$legacyCustomMembership,$membershipName,$membershipDuration,$membershipMonthlyPrice,$membershipAmount,$subtotal,$taxPercent,$taxAmount,$total,$validityDays,$proposalId,$existing): int {
             $now = date('c');
             [$leadId,$clientId,$opportunityId] = $this->relationshipIds($input, $existing, $businessName, $contactName, $email, $total, $score);
             $values = [
-                'client_id'=>$clientId,'lead_id'=>$leadId,'opportunity_id'=>$opportunityId,'package_id'=>(int)$package['id'],'builder_version'=>1,'locale'=>$locale,
+                'client_id'=>$clientId,'lead_id'=>$leadId,'opportunity_id'=>$opportunityId,'package_id'=>(int)$package['id'],'support_package_id'=>$supportPackageId ?: null,'builder_version'=>1,'locale'=>$locale,
                 'title'=>$businessName.' proposal','business_name'=>$businessName,'contact_name'=>$contactName,'contact_email'=>$email,
                 'contact_phone'=>trim((string)($input['contact_phone'] ?? '')) ?: null,'website'=>trim((string)($input['website'] ?? '')) ?: null,
                 'business_stage'=>in_array(($input['business_stage'] ?? ''), ['new_business','existing_business'], true) ? $input['business_stage'] : null,
                 'years_operating'=>max(0, (int)($input['years_operating'] ?? 0)),'summary'=>trim((string)($input['summary'] ?? '')) ?: null,
                 'internal_notes'=>trim((string)($input['internal_notes'] ?? '')) ?: null,'assessment_data'=>json_encode($assessment, JSON_UNESCAPED_UNICODE),
                 'assessment_score'=>$score,'recommended_tier'=>$recommendedTier,'selected_tier'=>$selectedTier,'support_plan'=>$support['code'],'support_name'=>$supportDuration?$supportName:null,'support_duration_months'=>$supportDuration,'support_rate_percent'=>$supportRatePercent,'support_amount'=>$supportAmount,
-                'membership_plan'=>$membership['code'],'membership_name'=>$membershipDuration ? $membershipName : null,'membership_duration_months'=>$membershipDuration,'membership_monthly_price'=>$membershipMonthlyPrice,'membership_amount'=>$membershipAmount,'currency'=>'CAD','subtotal'=>$subtotal,'discount'=>max(0, array_sum(array_map(fn(array $row): float => max(0, (float)$row['unit_price'] - (float)$row['total']), $normalizedItems))),
+                'membership_plan'=>$supportPackage['tier']??($legacyCustomMembership?'custom':'none'),'membership_name'=>$membershipDuration ? $membershipName : null,'membership_duration_months'=>$membershipDuration,'membership_monthly_price'=>$membershipMonthlyPrice,'membership_amount'=>$membershipAmount,'currency'=>'CAD','subtotal'=>$subtotal,'discount'=>max(0, array_sum(array_map(fn(array $row): float => max(0, (float)$row['unit_price'] - (float)$row['total']), array_merge($normalizedItems,$normalizedSupportItems)))),
                 'tax_percent'=>$taxPercent,'tax'=>$taxAmount,'total'=>$total,'deposit'=>0,'valid_until'=>date('Y-m-d', strtotime('+'.$validityDays.' days')),
                 'validity_days'=>$validityDays,'updated_at'=>$now,
             ];
@@ -192,12 +174,17 @@ final class QuoteStudioService
                 $descriptionHe = $customSupport ? 'תמיכה טכנית למשך '.$supportDuration.' חודשים בשיעור '.$rateLabel.'% מסכום ההקמה לכל 3 חודשים.' : (string)$support['description_he'];
                 $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'support','title'=>$supportName,'title_ar'=>$customSupport?$supportName:$support['name_ar'],'title_he'=>$customSupport?$supportName:$support['name_he'],'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'category'=>'Technical Support','quantity'=>1,'unit_price'=>$supportAmount,'discount_percent'=>0,'total'=>$supportAmount,'sort_order'=>900]);
             }
-            if ((string)$membership['code'] !== 'none') {
-                $formattedMembershipPrice = '$'.number_format($membershipMonthlyPrice, 2);
-                $description = trim((string)$membership['description']).' '.$formattedMembershipPrice.'/month for '.$membershipDuration.' months.';
-                $descriptionAr = trim((string)$membership['description_ar']).' '.$formattedMembershipPrice.' شهرياً لمدة '.$membershipDuration.' أشهر.';
-                $descriptionHe = trim((string)$membership['description_he']).' '.$formattedMembershipPrice.' לחודש למשך '.$membershipDuration.' חודשים.';
-                $this->db->insert('proposal_items', ['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'membership','title'=>$membershipName,'title_ar'=>(string)$membership['code']==='custom'?$membershipName:$membership['name_ar'],'title_he'=>(string)$membership['code']==='custom'?$membershipName:$membership['name_he'],'description'=>$description,'description_ar'=>$descriptionAr,'description_he'=>$descriptionHe,'category'=>'Service Membership','quantity'=>$membershipDuration,'unit_price'=>$membershipMonthlyPrice,'discount_percent'=>0,'total'=>$membershipAmount,'sort_order'=>950]);
+            foreach ($normalizedSupportItems as $row) {
+                $workItems = $row['work_items'];
+                unset($row['work_items']);
+                $row['quantity'] = $membershipDuration;
+                $row['total'] = round((float)$row['total'] * $membershipDuration, 2);
+                $proposalItemId = $this->db->insert('proposal_items', ['proposal_id'=>$proposalId] + $row);
+                $this->snapshotWorkItems($proposalId, $proposalItemId, (int)$row['service_id'], $supportPackageId, $workItems);
+            }
+            if ($legacyCustomMembership) {
+                $description='Custom support contract at $'.number_format($membershipMonthlyPrice,2).'/month for '.$membershipDuration.' months.';
+                $this->db->insert('proposal_items',['proposal_id'=>$proposalId,'service_id'=>null,'item_type'=>'membership','title'=>$membershipName,'title_ar'=>$membershipName,'title_he'=>$membershipName,'description'=>$description,'description_ar'=>$description,'description_he'=>$description,'category'=>'Support Contract','quantity'=>$membershipDuration,'unit_price'=>$membershipMonthlyPrice,'discount_percent'=>0,'total'=>$membershipAmount,'sort_order'=>1000]);
             }
             $this->audit('quote.saved', 'Quote '.$proposalId.' saved for '.$businessName, 'proposal', $proposalId);
             return $proposalId;
@@ -210,7 +197,7 @@ final class QuoteStudioService
         if (! $quote) { throw new InvalidArgumentException('The quote could not be found.'); }
         return $this->db->transaction(function () use ($quote,$id): int {
             $copy = $quote;
-            foreach (['id','items','deliveries','assessment','package_name','package_name_ar','package_name_he','package_description','package_description_ar','package_description_he'] as $key) { unset($copy[$key]); }
+            foreach (['id','items','deliveries','assessment','package_name','package_name_ar','package_name_he','package_description','package_description_ar','package_description_he','support_package_name','support_package_name_ar','support_package_name_he','support_package_description','support_package_description_ar','support_package_description_he'] as $key) { unset($copy[$key]); }
             $copy['proposal_number'] = $this->nextNumber();
             $copy['parent_proposal_id'] = $id;
             $copy['revision'] = (int)$this->db->scalar('SELECT COALESCE(MAX(revision),0)+1 FROM proposals WHERE id=? OR parent_proposal_id=?', [$id,$id]);
@@ -289,7 +276,8 @@ final class QuoteStudioService
 
     public function settingsData(): array
     {
-        $packages = $this->builderData()['packages'];
+        $packages = $this->packagesByType('quote_setup');
+        $supportPackages = $this->packagesByType('support_contract');
         $services = $this->db->all('SELECT s.*,sc.name AS category_name FROM services s JOIN service_categories sc ON sc.id=s.category_id ORDER BY s.quote_sort,s.name');
         $workItems = $this->db->all('SELECT * FROM service_work_items ORDER BY service_id,sort_order,id');
         $rules = $this->db->all('SELECT * FROM package_service_item_rules ORDER BY package_id,id');
@@ -306,8 +294,8 @@ final class QuoteStudioService
             'services'=>$services,
             'categories'=>$this->db->all('SELECT id,name FROM service_categories WHERE active=1 ORDER BY name'),
             'packages'=>$packages,
+            'supportPackages'=>$supportPackages,
             'supportPlans'=>$this->db->all('SELECT * FROM quote_support_plans ORDER BY sort_order,id'),
-            'memberships'=>$this->db->all('SELECT * FROM quote_memberships ORDER BY sort_order,id'),
         ];
     }
 
@@ -337,17 +325,20 @@ final class QuoteStudioService
     public function savePackage(array $input): int
     {
         $id=(int)($input['package_id']??0);
+        $requestedPackageType=(string)($input['package_type']??'quote_setup');
+        $packageType=in_array($requestedPackageType, ['quote_setup','support_contract'], true)?$requestedPackageType:'quote_setup';
+        $typeLabel=$packageType==='support_contract'?'Support contract':'Setup';
         $name=trim((string)($input['name']??''));
         if($name===''){throw new InvalidArgumentException('Package name is required.');}
         $tier=substr(Str::slug(trim((string)($input['tier']??$name)),'_'),0,20);
         if($tier===''){$tier='package';}
-        if($this->db->scalar('SELECT id FROM packages WHERE package_type=? AND tier=? AND id<>?',['quote_setup',$tier,$id])){throw new InvalidArgumentException('That package code is already in use.');}
+        if($this->db->scalar('SELECT id FROM packages WHERE package_type=? AND tier=? AND id<>?',[$packageType,$tier,$id])){throw new InvalidArgumentException('That package code is already in use for this package type.');}
         $values=['name'=>$name,'name_ar'=>trim((string)($input['name_ar']??''))?:null,'name_he'=>trim((string)($input['name_he']??''))?:null,'tier'=>$tier,'description'=>trim((string)($input['description']??''))?:null,'description_ar'=>trim((string)($input['description_ar']??''))?:null,'description_he'=>trim((string)($input['description_he']??''))?:null,'display_order'=>max(1,(int)($input['display_order']??99)),'active'=>!empty($input['active'])?1:0,'updated_at'=>date('c')];
         if($id){
-            if(!$this->db->scalar("SELECT id FROM packages WHERE id=? AND package_type='quote_setup'",[$id])){throw new InvalidArgumentException('Setup package not found.');}
+            if(!$this->db->scalar('SELECT id FROM packages WHERE id=? AND package_type=?',[$id,$packageType])){throw new InvalidArgumentException($typeLabel.' package not found.');}
             $this->db->update('packages',$id,$values);
         }else{
-            $values+=['package_type'=>'quote_setup','featured'=>0,'created_at'=>date('c')];
+            $values+=['package_type'=>$packageType,'featured'=>0,'created_at'=>date('c')];
             $id=$this->db->insert('packages',$values);
         }
         $this->audit('quote.package_saved','Quote package '.$id.' saved','package',$id);
@@ -357,7 +348,7 @@ final class QuoteStudioService
     public function addPackageItem(array $input): int
     {
         $packageId=(int)($input['package_id']??0);$serviceId=(int)($input['service_id']??0);
-        if(!$this->db->scalar("SELECT id FROM packages WHERE id=? AND package_type='quote_setup'",[$packageId])){throw new InvalidArgumentException('Setup package not found.');}
+        if(!$this->db->scalar("SELECT id FROM packages WHERE id=? AND package_type IN ('quote_setup','support_contract')",[$packageId])){throw new InvalidArgumentException('Quote package not found.');}
         $service=$this->db->first('SELECT id,description,description_ar,description_he,default_price,cost_estimate,estimated_hours FROM services WHERE id=? AND active=1 AND quote_enabled=1',[$serviceId]);
         if(!$service){throw new InvalidArgumentException('Select an active Quote Studio service.');}
         if($this->db->scalar('SELECT id FROM package_items WHERE package_id=? AND service_id=?',[$packageId,$serviceId])){throw new InvalidArgumentException('That service is already in this package.');}
@@ -423,6 +414,64 @@ final class QuoteStudioService
             'WHERE wi.service_id=? AND wi.active=1 ORDER BY COALESCE(r.sort_order,wi.sort_order),wi.id',
             [$packageId,$serviceId]
         );
+    }
+
+    private function packagesByType(string $packageType): array
+    {
+        $packages = $this->db->all(
+            'SELECT p.*,pp.base_price FROM packages p LEFT JOIN package_pricing pp ON pp.package_id=p.id AND pp.effective_to IS NULL WHERE p.package_type=? AND p.active=1 ORDER BY p.display_order,p.id',
+            [$packageType]
+        );
+        foreach ($packages as &$package) {
+            $package['items'] = $this->db->all(
+                'SELECT pi.*,s.name,s.name_ar,s.name_he,s.description AS service_description,s.description_ar AS service_description_ar,s.description_he AS service_description_he,sc.name AS category FROM package_items pi JOIN services s ON s.id=pi.service_id JOIN service_categories sc ON sc.id=s.category_id WHERE pi.package_id=? AND s.active=1 AND s.quote_enabled=1 ORDER BY pi.sort_order,pi.id',
+                [(int)$package['id']]
+            );
+            foreach ($package['items'] as &$item) { $item['work_items']=$this->resolvedWorkItems((int)$item['service_id'], (int)$package['id']); }
+            unset($item);
+        }
+        unset($package);
+        return $packages;
+    }
+
+    private function normalizePackageSelections(array $items, int $packageId, string $itemType, int $sortOffset): array
+    {
+        $normalized = [];
+        $subtotal = 0.0;
+        foreach ($items as $index => $item) {
+            if (! is_array($item) || empty($item['service_id'])) { continue; }
+            $catalog = $this->db->first(
+                'SELECT s.id,s.name,s.name_ar,s.name_he,s.description,s.description_ar,s.description_he,sc.name AS category FROM services s JOIN service_categories sc ON sc.id=s.category_id JOIN package_items pi ON pi.service_id=s.id AND pi.package_id=? WHERE s.id=? AND s.active=1 AND s.quote_enabled=1',
+                [$packageId,(int)$item['service_id']]
+            );
+            if (! $catalog) { continue; }
+            $listPrice=max(0,(float)($item['list_price']??0));
+            $discount=min(100,max(0,(float)($item['discount_percent']??0)));
+            $customPrice=($item['custom_price']??'')!==''&&($item['custom_price']??null)!==null?max(0,(float)$item['custom_price']):null;
+            $finalPrice=$customPrice??round($listPrice*(1-$discount/100),2);
+            $normalized[]=[
+                'service_id'=>(int)$catalog['id'],'item_type'=>$itemType,'title'=>$catalog['name'],'title_ar'=>$catalog['name_ar'],'title_he'=>$catalog['name_he'],
+                'description'=>trim((string)($item['description']??$catalog['description']??'')),'description_ar'=>trim((string)($item['description_ar']??$catalog['description_ar']??'')),'description_he'=>trim((string)($item['description_he']??$catalog['description_he']??'')),
+                'category'=>$itemType==='support_contract'?'Support Contract · '.$catalog['category']:$catalog['category'],
+                'quantity'=>1,'unit_price'=>$listPrice,'discount_percent'=>$discount,'total'=>$finalPrice,'sort_order'=>$sortOffset+$index,
+                'work_items'=>$this->normalizeQuoteWorkItems((array)($item['work_items']??[]),(int)$catalog['id'],$packageId),
+            ];
+            $subtotal+=$finalPrice;
+        }
+        return [$normalized,round($subtotal,2)];
+    }
+
+    private function defaultPackageSelections(int $packageId): array
+    {
+        $items=$this->db->all('SELECT service_id,unit_price,description,description_ar,description_he FROM package_items WHERE package_id=? AND included=1 ORDER BY sort_order,id',[$packageId]);
+        foreach($items as &$item){
+            $item['list_price']=$item['unit_price'];
+            $item['discount_percent']=0;
+            $item['custom_price']=null;
+            $item['work_items']=$this->resolvedWorkItems((int)$item['service_id'],$packageId);
+        }
+        unset($item);
+        return $items;
     }
 
     private function snapshotWorkItems(int $proposalId, int $proposalItemId, int $serviceId, int $packageId, array $submittedItems = []): void
@@ -613,7 +662,7 @@ final class QuoteStudioService
         $projectStart = date('Y-m-d');
         foreach ($quote['items'] as $proposalItem) {
             $itemType = (string)($proposalItem['item_type'] ?? 'service');
-            if (! in_array($itemType, ['service','support','membership'], true)) { continue; }
+            if (! in_array($itemType, ['service','support','membership','support_contract'], true)) { continue; }
             $existingProject = (int)($this->db->scalar('SELECT id FROM projects WHERE source_proposal_item_id=?', [(int)$proposalItem['id']]) ?: 0);
             if ($existingProject) { continue; }
 
@@ -625,6 +674,7 @@ final class QuoteStudioService
                 $taskTitle = match ($itemType) {
                     'support' => 'Activate '.$proposalItem['title'],
                     'membership' => 'Start '.$proposalItem['title'],
+                    'support_contract' => 'Deliver '.$proposalItem['title'].' support cycle',
                     default => 'Deliver '.$proposalItem['title'],
                 };
                 $workItems = [[
@@ -637,7 +687,7 @@ final class QuoteStudioService
             $estimatedHours = array_sum(array_map(static fn(array $item): float => max(0,(float)($item['estimated_hours'] ?? 0)), $workItems));
             $projectId = $this->db->insert('projects', [
                 'client_id'=>$clientId,
-                'package_id'=>$quote['package_id'] ?: null,
+                'package_id'=>$itemType==='support_contract' ? ($quote['support_package_id']?:null) : ($quote['package_id']?:null),
                 'source_proposal_id'=>(int)$quote['id'],
                 'source_proposal_item_id'=>(int)$proposalItem['id'],
                 'manager_id'=>null,

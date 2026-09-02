@@ -50,12 +50,12 @@ final class AgencySeeder
 
             $permissionGroups = [
                 'admin' => ['dashboard.view','crm.manage','clients.manage','packages.manage','projects.manage','tasks.manage','content.manage','finance.manage','team.manage','reports.view','settings.manage','dashboard.access','leads.access','pipeline.access','discovery.access','clients.access','packages.access','services.access','proposals.access','contracts.access','projects.access','tasks.access','visits.access','content.access','media.access','calendar.access','invoices.access','time.access','team.access','reports.access','settings.access','audit.access'],
-                'sales' => ['dashboard.view','crm.manage','clients.manage','packages.manage','finance.manage','reports.view','dashboard.access','calendar.access','leads.access','pipeline.access','discovery.access','clients.access','contracts.access','packages.access','services.access','proposals.access','invoices.access','reports.access'],
+                'sales' => ['dashboard.view','crm.manage','clients.manage','packages.manage','finance.manage','reports.view','dashboard.access','calendar.access','leads.access','pipeline.access','discovery.access','clients.access','contracts.access','packages.access','services.access','proposals.access','projects.access','tasks.access','invoices.access','reports.access'],
                 'project_manager' => ['dashboard.view','clients.manage','projects.manage','tasks.manage','content.manage','reports.view','dashboard.access','calendar.access','clients.access','contracts.access','projects.access','tasks.access','time.access','visits.access','content.access','media.access','reports.access'],
-                'marketing' => ['dashboard.view','clients.manage','tasks.manage','content.manage','dashboard.access','calendar.access','clients.access','tasks.access','time.access','visits.access','content.access','media.access'],
-                'creative' => ['dashboard.view','tasks.manage','content.manage','dashboard.access','calendar.access','tasks.access','time.access','visits.access','content.access','media.access'],
+                'marketing' => ['dashboard.view','clients.manage','tasks.manage','content.manage','dashboard.access','calendar.access','clients.access','projects.access','tasks.access','time.access','visits.access','content.access','media.access'],
+                'creative' => ['dashboard.view','tasks.manage','content.manage','dashboard.access','calendar.access','projects.access','tasks.access','time.access','visits.access','content.access','media.access'],
                 'developer' => ['dashboard.view','clients.manage','projects.manage','tasks.manage','dashboard.access','calendar.access','clients.access','projects.access','tasks.access','time.access'],
-                'employee' => ['dashboard.view','tasks.manage','dashboard.access','calendar.access','tasks.access','time.access'],
+                'employee' => ['dashboard.view','tasks.manage','dashboard.access','calendar.access','projects.access','tasks.access','time.access'],
             ];
             foreach ($permissionGroups as $roleSlug => $slugs) {
                 $roleId = (int) $db->scalar('SELECT id FROM roles WHERE slug = ?', [$roleSlug]);
@@ -251,7 +251,10 @@ final class AgencySeeder
                 ['Summit Fitness','Request campaign feedback',$employeeIds['Noah Williams'],'waiting','urgent',2],
             ];
             foreach ($taskRows as $i => $task) {
-                $db->insert('project_tasks', ['project_id'=>$projectIds[$task[0]],'client_id'=>$clientIds[$task[0]],'assigned_employee_id'=>$task[2],'title'=>$task[1],'description'=>'Complete the assigned deliverable and attach final notes.','due_date'=>date('Y-m-d',strtotime(($i === 5 ? '-1' : '+'.($i+1)).' days')),'priority'=>$task[4],'status'=>$task[3],'estimated_hours'=>$task[5],'actual_hours'=>max(1,$task[5]-2),'created_at'=>$now]);
+                $taskId = $db->insert('project_tasks', ['project_id'=>$projectIds[$task[0]],'client_id'=>$clientIds[$task[0]],'assigned_employee_id'=>$task[2],'title'=>$task[1],'description'=>'Complete the assigned deliverable and attach final notes.','due_date'=>date('Y-m-d',strtotime(($i === 5 ? '-1' : '+'.($i+1)).' days')),'priority'=>$task[4],'status'=>$task[3],'estimated_hours'=>$task[5],'actual_hours'=>max(1,$task[5]-2),'created_at'=>$now]);
+                if ($db->scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='project_task_assignees'")) {
+                    $db->insert('project_task_assignees', ['task_id'=>$taskId,'employee_id'=>$task[2],'assigned_by'=>$adminId,'assigned_at'=>$now]);
+                }
             }
             foreach ([['Northstar Coffee',$employeeIds['Ethan Cole'],7.5],['Cedar & Stone',$employeeIds['Ava Martinez'],8],['Harborview Dental',$employeeIds['Maya Chen'],4.5]] as $entry) {
                 $db->insert('time_entries', ['employee_id'=>$entry[1],'client_id'=>$clientIds[$entry[0]],'project_id'=>$projectIds[$entry[0]],'task_id'=>null,'entry_date'=>date('Y-m-d',strtotime('-1 day')),'hours'=>$entry[2],'description'=>'Production and project delivery work','billable'=>1,'created_at'=>$now]);

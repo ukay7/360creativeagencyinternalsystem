@@ -11,18 +11,23 @@
     var locale = root.dataset.locale || 'en';
     var tier = (proposal && proposal.selected_tier) || 'basic';
     var supportCode = (proposal && proposal.support_plan) || 'none';
-    var membershipCode = (proposal && proposal.membership_plan) || 'none';
+    var supportPackageId = Number((proposal && proposal.support_package_id) || 0);
     var recommendationRules = data.recommendation || {basic_max:7, medium_max:14, max_score:20, presets:{basic:0,medium:1,pro:2}};
     var membershipDuration = Number((proposal && proposal.membership_duration_months) || 3);
     var membershipTermMode = [3,12,18].indexOf(membershipDuration) >= 0 ? String(membershipDuration) : 'custom';
     var activeItems = [];
+    var supportActiveItems = [];
     var originalItems = {};
     (data.initialItems || []).forEach(function (item) { originalItems[String(item.service_id)] = item; });
+    var originalSupportItems = {};
+    (data.initialSupportItems || []).forEach(function (item) { originalSupportItems[String(item.service_id)] = item; });
     var workItemSelections = {};
+    var supportStateByPackage = {};
     var scopeEditingRow = null;
 
     function clone(value) { return JSON.parse(JSON.stringify(value || [])); }
     function workSelectionKey(serviceId) { return String(tier) + ':' + String(serviceId); }
+    function supportWorkSelectionKey(packageId,serviceId) { return 'support:' + String(packageId) + ':' + String(serviceId); }
     function quoteWorkSelection(packageItems,savedItems) {
         if (!savedItems || !savedItems.length) return clone(packageItems || []);
         var savedByTemplate={};savedItems.forEach(function(item){savedByTemplate[String(item.service_work_item_id||item.id)]=item;});
@@ -208,6 +213,68 @@
         updatePricing();
     }
 
+    function currentSupportPackage() {
+        return (data.supportPackages || []).find(function (item) { return Number(item.id) === Number(supportPackageId); }) || null;
+    }
+
+    function captureSupportState() {
+        if (!supportPackageId) return {};
+        var state={};
+        document.querySelectorAll('#support-service-rows tr').forEach(function(row){
+            if(!row._packageItem)return;
+            var discount=Math.min(100,Math.max(0,Number(row.querySelector('.support-item-discount').value||0)));
+            var customText=row.querySelector('.support-item-custom').value.trim();
+            var custom=customText===''?null:Math.max(0,Number(customText||0));
+            var list=Number(row._packageItem.unit_price||0);
+            state[String(row._packageItem.service_id)]={enabled:row.querySelector('.support-item-enabled').checked,discount_percent:discount,custom_price:custom,final_price:custom===null?Math.round(list*(1-discount/100)*100)/100:custom,work_items:clone(row._packageItem.work_items||[])};
+        });
+        supportStateByPackage[String(supportPackageId)]=state;
+        return state;
+    }
+
+    function readSupportRows() {
+        var rows=[];
+        document.querySelectorAll('#support-service-rows tr').forEach(function(row){
+            var item=row._packageItem;if(!item||!row.querySelector('.support-item-enabled').checked)return;
+            var list=Number(item.unit_price||0),discount=Math.min(100,Math.max(0,Number(row.querySelector('.support-item-discount').value||0)));
+            var customText=row.querySelector('.support-item-custom').value.trim(),custom=customText===''?null:Math.max(0,Number(customText||0));
+            var finalPrice=custom===null?Math.round(list*(1-discount/100)*100)/100:custom;
+            rows.push({service_id:Number(item.service_id),list_price:list,discount_percent:discount,custom_price:custom,final_price:finalPrice,description:item.description||item.service_description||'',description_ar:item.description_ar||item.service_description_ar||'',description_he:item.description_he||item.service_description_he||'',work_items:clone(item.work_items||[])});
+        });
+        supportActiveItems=rows;return rows;
+    }
+
+    function renderSupportServices() {
+        var pack=currentSupportPackage(),tbody=document.getElementById('support-service-rows');
+        tbody.innerHTML='';supportActiveItems=[];
+        if(!pack)return;
+        var preserved=supportStateByPackage[String(pack.id)]||{};
+        (pack.items||[]).forEach(function(item,index){
+            var original=Number(proposal&&proposal.support_package_id)===Number(pack.id)?originalSupportItems[String(item.service_id)]:null;
+            var saved=preserved[String(item.service_id)]||null,key=supportWorkSelectionKey(pack.id,item.service_id);
+            if(saved)workItemSelections[key]=clone(saved.work_items||[]);else if(!workItemSelections[key])workItemSelections[key]=quoteWorkSelection(item.work_items||[],original&&original.work_items);
+            var viewItem=clone(item);viewItem.work_items=workItemSelections[key];
+            var enabled=saved?Boolean(saved.enabled):(original?true:Number(item.included)===1);
+            var discount=saved?Number(saved.discount_percent||0):(original?Number(original.discount_percent||0):0),list=Number(item.unit_price||0);
+            var originalMonthly=original&&Number(original.quantity||0)>0?Number(original.total||0)/Number(original.quantity):null;
+            var expected=Math.round(list*(1-discount/100)*100)/100;
+            var custom=saved?(saved.custom_price===null?'':Number(saved.custom_price)):(original&&Math.abs(originalMonthly-expected)>0.009?originalMonthly:'');
+            var displayed=saved?Number(saved.final_price||0):(original?originalMonthly:list),title=localized(item,'name'),description=localized(item,'description')||localized(item,'service_description');
+            var tr=document.createElement('tr');tr._packageItem=viewItem;tr._workSelectionKey=key;
+            tr.innerHTML='<td><label class="quote-check"><input class="support-item-enabled" type="checkbox" '+(enabled?'checked':'')+'><span></span></label></td><td><span class="quote-row-number">'+(index+1)+'</span></td><td><div class="quote-service-title"><strong>'+esc(title)+'</strong><button type="button" class="quote-scope-help" data-scope-help title="Edit quote items"><i class="fal fa-pencil"></i></button></div><small><b>'+esc(item.category||'')+'</b> · '+esc(description)+'<span class="quote-work-summary">'+((viewItem.work_items||[]).length?' · '+(viewItem.work_items||[]).filter(function(work){return Number(work.included)===1;}).length+' quote items':'')+'</span></small></td><td class="quote-list-price">'+money(list)+'</td><td><input class="quote-price-input support-item-discount" type="number" min="0" max="100" step="0.01" value="'+esc(discount)+'"></td><td><input class="quote-price-input support-item-custom" type="number" min="0" step="0.01" value="'+esc(custom)+'" placeholder="Custom"></td><td><strong class="support-final-price">'+money(displayed)+'</strong></td>';
+            tbody.appendChild(tr);
+        });
+        updateSupportPricing();
+    }
+
+    function updateSupportPricing() {
+        document.querySelectorAll('#support-service-rows tr').forEach(function(row){
+            var enabled=row.querySelector('.support-item-enabled').checked,list=Number(row._packageItem.unit_price||0),discount=Math.min(100,Math.max(0,Number(row.querySelector('.support-item-discount').value||0))),customText=row.querySelector('.support-item-custom').value.trim();
+            var total=customText===''?list*(1-discount/100):Math.max(0,Number(customText||0));row.classList.toggle('excluded',!enabled);row.querySelector('.support-final-price').textContent=enabled?money(total):money(0);
+        });
+        readSupportRows();renderPlans();updateReview();
+    }
+
     function updatePricing() {
         document.querySelectorAll('#quote-service-rows tr').forEach(function (row) {
             var enabled = row.querySelector('.quote-item-enabled').checked;
@@ -290,7 +357,7 @@
             });
         });
         scopeEditingRow._packageItem.work_items=updated;
-        workItemSelections[workSelectionKey(scopeEditingRow._packageItem.service_id)]=updated;
+        workItemSelections[scopeEditingRow._workSelectionKey||workSelectionKey(scopeEditingRow._packageItem.service_id)]=updated;
         var summary=scopeEditingRow.querySelector('.quote-work-summary');
         if(summary)summary.textContent=updated.length?' · '+updated.filter(function(work){return Number(work.included)===1;}).length+' quote items':'';
         document.getElementById('quote-scope-modal').hidden=true;
@@ -325,16 +392,13 @@
         });
         document.getElementById('custom-support-panel').hidden=supportCode!=='custom';
         document.getElementById('custom-support-total').textContent=money(customSupportAmount(setupAmount));
-        var memberHost=document.getElementById('membership-plan-options'); memberHost.innerHTML='';
-        (data.memberships || []).forEach(function(plan){
-            var button=document.createElement('button'); button.type='button'; button.className='quote-plan-card'+(plan.code===membershipCode?' active':''); button.dataset.membership=plan.code;
-            var monthly=plan.code==='custom' ? customMembershipMonthlyPrice() : Number(plan.monthly_price||0);
-            var pricing=monthly>0 ? money(monthly)+'/mo' : (plan.code==='custom' ? dictionary('custom_plan') : dictionary('no_membership'));
-            button.innerHTML='<strong>'+esc(localized(plan,'name'))+'</strong><span>'+esc(pricing)+'</span><small>'+esc(localized(plan,'description'))+'</small>'+(Number(plan.featured)?'<em>'+esc(dictionary('most_popular'))+'</em>':''); memberHost.appendChild(button);
+        var memberHost=document.getElementById('support-contract-options'); memberHost.innerHTML='';
+        var noContract=document.createElement('button');noContract.type='button';noContract.className='quote-plan-card'+(!supportPackageId?' active':'');noContract.dataset.supportPackage='0';noContract.innerHTML='<strong>'+esc(dictionary('no_support_contract'))+'</strong><span>'+money(0)+'/mo</span><small>'+esc(dictionary('no_support_contract'))+'</small>';memberHost.appendChild(noContract);
+        (data.supportPackages || []).forEach(function(plan){
+            var monthly=(plan.items||[]).reduce(function(sum,item){return sum+(Number(item.included)===1?Number(item.unit_price||0):0);},0),button=document.createElement('button');button.type='button';button.className='quote-plan-card'+(Number(plan.id)===Number(supportPackageId)?' active':'');button.dataset.supportPackage=String(plan.id);button.innerHTML='<strong>'+esc(localized(plan,'name'))+'</strong><span>'+money(monthly)+'/mo</span><small>'+esc(localized(plan,'description'))+'</small>'+(Number(plan.featured)?'<em>'+esc(dictionary('most_popular'))+'</em>':'');memberHost.appendChild(button);
         });
-        var hasMembership=membershipCode!=='none';
-        document.getElementById('membership-term-panel').hidden=!hasMembership;
-        document.getElementById('custom-membership-panel').hidden=membershipCode!=='custom';
+        var hasMembership=Number(supportPackageId)>0;
+        document.getElementById('support-contract-details').hidden=!hasMembership;
         var customDurationActive=hasMembership&&membershipTermMode==='custom';
         document.getElementById('custom-duration-panel').hidden=!customDurationActive;
         var customDurationInput=document.getElementById('custom-membership-duration');
@@ -345,38 +409,70 @@
         document.getElementById('plan-setup-total').textContent=money(amount.setup);
         document.getElementById('plan-support-total').textContent=money(amount.support);
         document.getElementById('plan-membership-total').textContent=money(amount.membership)+(hasMembership?' · '+membershipDurationValue()+' '+dictionary('months'):'');
+        document.getElementById('support-monthly-total').textContent=money(amount.membershipMonthly);
+        document.getElementById('support-contract-total').textContent=money(amount.membership);
     }
 
     function selectedSupport() { return (data.supportPlans || []).find(function(plan){return plan.code===supportCode;}) || {rate_percent:0,multiplier:0}; }
-    function selectedMembership() { return (data.memberships || []).find(function(plan){return plan.code===membershipCode;}) || {monthly_price:0}; }
     function customSupportRate() { return Math.min(100,Math.max(0,Number(document.getElementById('custom-support-rate').value||0))); }
     function customSupportDuration() { return Math.min(60,Math.max(1,Number(document.getElementById('custom-support-duration').value||1))); }
     function customSupportAmount(setup) { return Number(setup||0)*customSupportRate()/100*(customSupportDuration()/3); }
-    function customMembershipMonthlyPrice() { return Math.max(0,Number(document.getElementById('custom-membership-price').value||0)); }
     function membershipDurationValue() {
         return membershipTermMode==='custom' ? Math.min(60,Math.max(1,Number(document.getElementById('custom-membership-duration').value||1))) : Number(membershipTermMode||3);
     }
     function totals() {
         var setup=activeItems.reduce(function(sum,item){return sum+Number(item.final_price||0);},0);
         var support=selectedSupport(); var supportAmount=supportCode==='custom' ? customSupportAmount(setup) : setup*Number(support.rate_percent||0)/100*Number(support.multiplier||0);
-        var membership=selectedMembership(); var monthlyPrice=membershipCode==='custom' ? customMembershipMonthlyPrice() : Number(membership.monthly_price||0);
-        var membershipAmount=membershipCode==='none' ? 0 : monthlyPrice*membershipDurationValue(); var subtotal=setup+supportAmount+membershipAmount;
+        var monthlyPrice=supportActiveItems.reduce(function(sum,item){return sum+Number(item.final_price||0);},0);
+        var membershipAmount=!supportPackageId ? 0 : monthlyPrice*membershipDurationValue(); var subtotal=setup+supportAmount+membershipAmount;
         var tax=document.getElementById('tax-enabled').checked?subtotal*0.13:0;
-        return {setup:setup,support:supportAmount,membership:membershipAmount,membershipMonthly:monthlyPrice,membershipDuration:membershipCode==='none'?0:membershipDurationValue(),subtotal:subtotal,tax:tax,total:subtotal+tax};
+        return {setup:setup,support:supportAmount,membership:membershipAmount,membershipMonthly:monthlyPrice,membershipDuration:!supportPackageId?0:membershipDurationValue(),subtotal:subtotal,tax:tax,total:subtotal+tax};
     }
     function updateReview() {
         if (!document.getElementById('review-items')) return;
-        readRows(); var amount=totals();
+        readRows(); readSupportRows(); var amount=totals();
         document.getElementById('setup-subtotal').textContent=money(amount.setup);
         document.getElementById('review-business').textContent=form.elements.business_name.value || 'Business Name';
         document.getElementById('review-contact').textContent=form.elements.contact_name.value || 'Client Name';
         document.getElementById('review-tier').textContent=tier.toUpperCase();
-        var host=document.getElementById('review-items'); host.innerHTML='<h5>'+esc(dictionary('service'))+'</h5>';
+        function adjustment(item) {
+            if (item.custom_price !== null && item.custom_price !== '' && item.custom_price !== undefined) return dictionary('custom_price');
+            return Number(item.discount_percent||0)>0 ? '-'+Number(item.discount_percent||0)+'%' : '—';
+        }
+        function workItems(item) {
+            var rows=(item.work_items||[]).filter(function(work){return work.included==null||Number(work.included)===1;});
+            if(!rows.length)return '';
+            return '<ul class="quote-review-deliverables">'+rows.map(function(work){var scope=localized(work,'scope_value')||localized(work,'value_label');return '<li><i class="fal fa-check-circle"></i><span><b>'+esc(localized(work,'title')||localized(work,'name'))+'</b>'+(scope?'<small>'+esc(scope)+'</small>':'')+'</span></li>';}).join('')+'</ul>';
+        }
+        var host=document.getElementById('review-items');
         var pack=currentPackage();
-        activeItems.forEach(function(item,index){var source=(pack.items||[]).find(function(row){return Number(row.service_id)===Number(item.service_id);})||{}; var line=document.createElement('div');line.className='quote-review-item';line.innerHTML='<span>'+(index+1)+'</span><div><strong>'+esc(localized(source,'name'))+'</strong><small>'+esc(localized(source,'description')||localized(source,'service_description'))+'</small></div><b>'+money(item.final_price)+'</b>';host.appendChild(line);});
+        var setupLines=activeItems.map(function(item,index){var source=(pack.items||[]).find(function(row){return Number(row.service_id)===Number(item.service_id);})||{};return '<div class="quote-review-cost-row"><span class="quote-review-number">'+(index+1)+'</span><div class="quote-review-service"><strong>'+esc(localized(source,'name'))+'</strong><small>'+esc(localized(source,'description')||localized(source,'service_description'))+'</small>'+workItems(item)+'</div><span class="quote-review-price"><small>'+esc(dictionary('list_rate'))+'</small><b>'+money(item.list_price)+'</b></span><span class="quote-review-price"><small>'+esc(dictionary('adjustment'))+'</small><b>'+esc(adjustment(item))+'</b></span><span class="quote-review-price quote-review-price--total"><small>'+esc(dictionary('one_time_total'))+'</small><b>'+money(item.final_price)+'</b></span></div>';}).join('');
+        var setupSection='<section class="quote-review-section quote-review-section--setup"><header><span>01</span><div><h5>'+esc(dictionary('setup_services_title'))+'</h5><p>'+esc(dictionary('setup_services_help'))+'</p></div><strong>'+money(amount.setup)+'</strong></header><div class="quote-review-column-head"><span></span><span>'+esc(dictionary('scope_and_deliverables'))+'</span><span>'+esc(dictionary('list_rate'))+'</span><span>'+esc(dictionary('adjustment'))+'</span><span>'+esc(dictionary('one_time_total'))+'</span></div>'+setupLines+'<footer><span>'+esc(dictionary('setup_subtotal'))+'</span><b>'+money(amount.setup)+'</b></footer></section>';
+        var selectedSupportPlan=selectedSupport();
+        var supportSelected=supportCode!=='none'&&Number(amount.support)>0;
+        var supportName=supportSelected?localized(selectedSupportPlan,'name'):dictionary('not_selected');
+        if(supportCode==='custom'&&document.getElementById('custom-support-name').value.trim())supportName=document.getElementById('custom-support-name').value.trim();
+        var supportDescription=supportSelected?localized(selectedSupportPlan,'description'):dictionary('no_support');
+        var supportRate=supportCode==='custom'?customSupportRate():Number(selectedSupportPlan.rate_percent||0);
+        var supportCycles=supportCode==='custom'?(customSupportDuration()/3):Number(selectedSupportPlan.multiplier||0);
+        var supportDuration=supportCode==='custom'?customSupportDuration():Number(selectedSupportPlan.duration_months||0);
+        var supportFormula=supportSelected?money(amount.setup)+' × '+supportRate+'% × '+Math.round(supportCycles*100)/100:'—';
+        var supportSection='<section class="quote-review-section quote-review-section--technical"><header><span>02</span><div><h5>'+esc(dictionary('technical_support'))+'</h5><p>'+esc(dictionary('technical_support_help'))+'</p></div><strong>'+money(amount.support)+'</strong></header><div class="quote-review-support-card"><div><small>'+esc(dictionary('technical_support'))+'</small><strong>'+esc(supportName)+'</strong><p>'+esc(supportDescription)+'</p></div><div><small>'+esc(dictionary('support_duration'))+'</small><strong>'+(supportSelected?supportDuration+' '+esc(dictionary('months')):'—')+'</strong></div><div><small>'+esc(dictionary('pricing_basis'))+'</small><strong>'+esc(supportFormula)+'</strong></div><div class="quote-review-support-total"><small>'+esc(dictionary('calculated_support'))+'</small><strong>'+money(amount.support)+'</strong></div></div></section>';
+        var supportPack=currentSupportPackage();
+        var contractLines='';
+        if(supportPack&&supportActiveItems.length){contractLines=supportActiveItems.map(function(item,index){var source=(supportPack.items||[]).find(function(row){return Number(row.service_id)===Number(item.service_id);})||{};return '<div class="quote-review-cost-row quote-review-cost-row--contract"><span class="quote-review-number">'+(index+1)+'</span><div class="quote-review-service"><strong>'+esc(localized(source,'name'))+'</strong><small>'+esc(localized(source,'description')||localized(source,'service_description'))+'</small>'+workItems(item)+'</div><span class="quote-review-price"><small>'+esc(dictionary('list_rate'))+'</small><b>'+money(item.list_price)+'/mo</b></span><span class="quote-review-price"><small>'+esc(dictionary('adjustment'))+'</small><b>'+esc(adjustment(item))+'</b></span><span class="quote-review-price"><small>'+esc(dictionary('monthly_rate'))+'</small><b>'+money(item.final_price)+'</b></span><span class="quote-review-price quote-review-price--total"><small>'+esc(dictionary('contract_value'))+'</small><b>'+money(Number(item.final_price)*membershipDurationValue())+'</b></span></div>';}).join('');}
+        else{contractLines='<div class="quote-review-empty">'+esc(dictionary('no_support_contract'))+'</div>';}
+        var supportPackageName=supportPack?localized(supportPack,'name'):dictionary('not_selected');
+        var contractSection='<section class="quote-review-section quote-review-section--contract"><header><span>03</span><div><h5>'+esc(dictionary('support_contract_services'))+'</h5><p>'+esc(dictionary('support_contract_services_help'))+'</p></div><strong>'+money(amount.membership)+'</strong></header>'+(supportPack?'<div class="quote-review-contract-meta"><div><small>'+esc(dictionary('support_package'))+'</small><strong>'+esc(supportPackageName)+'</strong></div><div><small>'+esc(dictionary('monthly_subtotal'))+'</small><strong>'+money(amount.membershipMonthly)+'</strong></div><div><small>'+esc(dictionary('contract_term'))+'</small><strong>'+amount.membershipDuration+' '+esc(dictionary('months'))+'</strong></div><div><small>'+esc(dictionary('contract_value'))+'</small><strong>'+money(amount.membership)+'</strong></div></div>':'')+contractLines+'<footer><span>'+esc(dictionary('monthly_subtotal'))+' '+money(amount.membershipMonthly)+' × '+amount.membershipDuration+' '+esc(dictionary('months'))+'</span><b>'+money(amount.membership)+'</b></footer></section>';
+        host.innerHTML=setupSection+supportSection+contractSection;
+        document.getElementById('review-overview-setup').textContent=money(amount.setup);
+        document.getElementById('review-overview-support').textContent=money(amount.support);
+        document.getElementById('review-overview-monthly').textContent=money(amount.membershipMonthly);
+        document.getElementById('review-overview-term').textContent=amount.membershipDuration?amount.membershipDuration+' '+dictionary('months'):'—';
+        document.getElementById('review-membership-detail').textContent=amount.membershipDuration?money(amount.membershipMonthly)+'/mo × '+amount.membershipDuration+' '+dictionary('months'):'';
         ['setup','support','membership','subtotal','tax','total'].forEach(function(key){document.getElementById('review-'+key).textContent=money(amount[key]);});
         document.getElementById('items-json').value=JSON.stringify(activeItems);
-        document.getElementById('support-plan-input').value=supportCode; document.getElementById('membership-plan-input').value=membershipCode; document.getElementById('membership-term-input').value=amount.membershipDuration;
+        document.getElementById('support-items-json').value=JSON.stringify(supportActiveItems);document.getElementById('support-plan-input').value=supportCode;document.getElementById('support-package-input').value=String(supportPackageId||0);document.getElementById('membership-term-input').value=amount.membershipDuration;
     }
 
     function showStep(next) {
@@ -395,7 +491,7 @@
     root.addEventListener('click',function(event){
         var tierButton=event.target.closest('[data-tier]');if(tierButton){applyTierPreset(tierButton.dataset.tier);return;}
         var supportButton=event.target.closest('[data-support]');if(supportButton){supportCode=supportButton.dataset.support;renderPlans();updateReview();return;}
-        var memberButton=event.target.closest('[data-membership]');if(memberButton){membershipCode=memberButton.dataset.membership;renderPlans();updateReview();return;}
+        var memberButton=event.target.closest('[data-support-package]');if(memberButton){captureSupportState();supportPackageId=Number(memberButton.dataset.supportPackage||0);renderSupportServices();renderPlans();updateReview();return;}
         var termButton=event.target.closest('[data-membership-term]');if(termButton){membershipTermMode=termButton.dataset.membershipTerm;if(membershipTermMode!=='custom')membershipDuration=Number(membershipTermMode);renderPlans();updateReview();return;}
         var scoreButton=event.target.closest('[data-score-help]');if(scoreButton){renderWeightList();document.getElementById('quote-score-modal').hidden=false;document.body.classList.add('quote-modal-open');return;}
         var scopeButton=event.target.closest('[data-scope-help]');if(scopeButton){var row=scopeButton.closest('tr');if(row&&row._packageItem)openQuoteWorkItems(row);return;}
@@ -407,8 +503,10 @@
     document.addEventListener('keydown',function(event){if(event.key==='Escape'){document.getElementById('quote-scope-modal').hidden=true;document.getElementById('quote-score-modal').hidden=true;document.body.classList.remove('quote-modal-open');}});
     document.getElementById('quote-service-rows').addEventListener('input',updatePricing);
     document.getElementById('quote-service-rows').addEventListener('change',updatePricing);
+    document.getElementById('support-service-rows').addEventListener('input',updateSupportPricing);
+    document.getElementById('support-service-rows').addEventListener('change',updateSupportPricing);
     root.querySelectorAll('.assessment-answer').forEach(function(select){select.addEventListener('change',function(){updateAssessment(true);});});
-    ['custom-support-name','custom-support-rate','custom-support-duration','custom-membership-name','custom-membership-price','custom-membership-duration'].forEach(function(id){document.getElementById(id).addEventListener('input',function(){if(id==='custom-membership-duration')membershipDuration=membershipDurationValue();renderPlans();updateReview();});});
+    ['custom-support-name','custom-support-rate','custom-support-duration','custom-membership-duration'].forEach(function(id){document.getElementById(id).addEventListener('input',function(){if(id==='custom-membership-duration')membershipDuration=membershipDurationValue();renderPlans();updateReview();});});
     document.getElementById('tax-enabled').addEventListener('change',updateReview);
     document.getElementById('quote-next').addEventListener('click',function(){if(validCurrentStep())showStep(step+1);});
     document.getElementById('quote-back').addEventListener('click',function(){showStep(step-1);});
@@ -443,5 +541,5 @@
     document.addEventListener('click',function(event){if(!event.target.closest('#quote-relationship-combobox')){closeRelationshipPicker();syncRelationshipPicker();}});
 
     root.querySelectorAll('[data-step-tab]').forEach(function(button){button.setAttribute('aria-selected',button.dataset.stepTab==='1'?'true':'false');});
-    syncRelationshipPicker(); renderWeightList(); document.getElementById('tier-override').value=tier; updateAssessment(false); applyLanguage(!!proposal); showStep(1);
+    syncRelationshipPicker(); renderWeightList(); document.getElementById('tier-override').value=tier; updateAssessment(false); renderSupportServices(); applyLanguage(!!proposal); showStep(1);
 })();

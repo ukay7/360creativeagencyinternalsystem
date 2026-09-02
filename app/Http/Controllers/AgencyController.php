@@ -109,6 +109,7 @@ final class AgencyController extends Controller
     {
         $route = $this->safeRoute(preg_replace('/[^a-z_]/', '', $module) ?: 'dashboard');
         $action = (string) $request->input('action', '');
+        $listReturnUrl = $this->listReturnUrl($request, $route);
 
         if ($action === 'logout') {
             $this->auth->logout();
@@ -138,6 +139,7 @@ final class AgencyController extends Controller
                 'create_project'=>['projects.access', fn()=>$this->agency->createProject($input), 'projects', 'Project created successfully.'],
                 'create_task'=>['tasks.access', fn()=>$this->agency->createTask($input), 'tasks', 'Task created successfully.'],
                 'update_project'=>['projects.access', fn()=>$this->agency->updateProject($input), 'projects', 'Project updated successfully.'],
+                'delete_project'=>['projects.access', fn()=>$this->agency->deleteProject((int)$input['project_id']), 'projects', 'Project deleted successfully.'],
                 'update_task'=>['tasks.access', fn()=>$this->agency->updateTask($input), 'tasks', 'Task updated successfully.'],
                 'duplicate_task'=>['tasks.access', fn()=>$this->agency->duplicateTask((int)$input['task_id']), 'tasks', 'Task duplicated successfully.'],
                 'add_task_note'=>['tasks.access', fn()=>$this->agency->addTaskNote((int)$input['task_id'],(string)($input['note']??'')), 'tasks', 'Task note added to the activity trail.'],
@@ -171,8 +173,8 @@ final class AgencyController extends Controller
                 'record_quote_delivery'=>['proposals.access', fn()=>$this->quotes->recordDelivery($input), 'quote_view', 'Quote delivery was recorded. You can send the prepared email draft now.'],
                 'onboard_quote'=>['proposals.access', fn()=>$this->quotes->onboard((int)$input['proposal_id']), 'client', 'Quote accepted and the client was onboarded.'],
                 'save_quote_service'=>['settings.access', fn()=>$this->quotes->saveService($input), 'quote_settings', 'Service catalog updated.'],
-                'save_quote_package'=>['settings.access', fn()=>$this->quotes->savePackage($input), 'quote_settings', 'Setup package saved.'],
-                'add_quote_package_item'=>['settings.access', fn()=>$this->quotes->addPackageItem($input), 'quote_settings', 'Service added to the setup package.'],
+                'save_quote_package'=>['settings.access', fn()=>$this->quotes->savePackage($input), 'quote_settings', 'Quote package saved.'],
+                'add_quote_package_item'=>['settings.access', fn()=>$this->quotes->addPackageItem($input), 'quote_settings', 'Service added to the package.'],
                 'save_quote_package_item'=>['settings.access', fn()=>$this->quotes->savePackageItem($input), 'quote_settings', 'Package item price and description updated.'],
                 'remove_quote_package_item'=>['settings.access', fn()=>$this->quotes->removePackageItem((int)$input['package_item_id']), 'quote_settings', 'Service removed from the setup package.'],
                 'save_quote_plan'=>['settings.access', fn()=>$this->quotes->savePlan($input), 'quote_settings', 'Support or membership plan updated.'],
@@ -188,14 +190,50 @@ final class AgencyController extends Controller
             if ($action === 'move_opportunity' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
             if (in_array($action,['save_quote','duplicate_quote','record_quote_delivery'],true) && is_int($result)) { $parameters['id'] = $action==='record_quote_delivery' ? (int)$input['proposal_id'] : $result; }
             if ($action === 'onboard_quote' && is_int($result)) { $parameters['id'] = $result; }
-            return redirect(agency_url($successRoute, $parameters))->with('success', $message);
+            return redirect($listReturnUrl ?? agency_url($successRoute, $parameters))->with('success', $message);
         } catch (Throwable $exception) {
             report($exception);
             $message = $exception instanceof InvalidArgumentException ? $exception->getMessage() : 'The request could not be completed. Please review the information and try again.';
             $parameters = $route === 'client' && ! empty($input['client_id']) ? ['id'=>(int)$input['client_id']] : [];
             if ($route === 'lead' && ! empty($input['lead_id'])) { $parameters = ['id'=>(int)$input['lead_id']]; }
-            return redirect(agency_url($route, $parameters))->with('danger', $message)->withInput();
+            return redirect($listReturnUrl ?? agency_url($route, $parameters))->with('danger', $message)->withInput();
         }
+    }
+
+    private function listReturnUrl(Request $request, string $route): ?string
+    {
+        if (! in_array($route, ['projects', 'tasks'], true)) {
+            return null;
+        }
+
+        $candidate = trim((string) $request->input('return_url', ''));
+        if ($candidate === '' || str_contains($candidate, "\r") || str_contains($candidate, "\n")) {
+            return null;
+        }
+
+        $parts = parse_url($candidate);
+        if ($parts === false || isset($parts['scheme']) || isset($parts['host']) || isset($parts['user']) || isset($parts['pass'])) {
+            return null;
+        }
+
+        $expectedPath = (string) parse_url(agency_url($route), PHP_URL_PATH);
+        $candidatePath = '/'.ltrim((string) ($parts['path'] ?? ''), '/');
+        if ($candidatePath !== '/'.ltrim($expectedPath, '/')) {
+            return null;
+        }
+
+        parse_str((string) ($parts['query'] ?? ''), $query);
+        $allowed = $route === 'projects'
+            ? ['client_id', 'project_type', 'status', 'table_search', 'table_page', 'table_sort', 'table_direction']
+            : ['project_id', 'assigned_employee_id', 'status', 'table_search', 'table_page', 'table_sort', 'table_direction'];
+        $filtered = [];
+        foreach ($allowed as $key) {
+            if (isset($query[$key]) && is_scalar($query[$key]) && trim((string) $query[$key]) !== '') {
+                $filtered[$key] = (string) $query[$key];
+            }
+        }
+
+        return agency_url($route).($filtered ? '?'.http_build_query($filtered) : '');
     }
 
     private function calendarPage(Request $request, array $options, string $route): mixed
@@ -481,7 +519,7 @@ final class AgencyController extends Controller
     private function proposalPage(array $o, int $selectedOpportunityId = 0): array { return ['title'=>'Proposals','subtitle'=>'Scope and price engagements before work begins.','route'=>'proposals','addLabel'=>'New Proposal','action'=>'create_proposal','columns'=>[['proposal_number','Proposal','strong'],['business_name','Client / Lead','text'],['title','Engagement','text'],['package_name','Package','text'],['total','Total','money'],['status','Status','badge'],['valid_until','Valid until','date']], 'fields'=>[['opportunity_id','Sales opportunity','select',false,$o['opportunities'],$selectedOpportunityId],['client_id','Existing client (without opportunity)','select',false,$o['clients']],['package_id','Package','select',false,$o['packages']],['title','Proposal title','text',true],['summary','Executive summary','textarea',false],['description','Line item / scope','textarea',true],['amount','Subtotal','number',true],['discount','Discount','number',false,null,0],['tax_percent','Tax %','number',false,null,0],['deposit','Deposit','number',false,null,0],['valid_until','Valid until','date',true,null,date('Y-m-d',strtotime('+14 days'))]]]; }
     private function contractPage(array $o): array { return ['title'=>'Contracts','subtitle'=>'Control scope, terms, renewal dates, and client commitments.','route'=>'contracts','addLabel'=>'New Contract','action'=>'create_contract','columns'=>[['business_name','Client','strong'],['package_name','Package','text'],['project_name','Project','text'],['start_date','Start','date'],['end_date','End','date'],['days_left','Days left','days_left'],['renewal_type','Renewal','human'],['status','Status','badge']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['package_id','Package','select',false,$o['packages']],['project_id','Project','select',false,$o['projects']],['start_date','Start date','date',true,null,date('Y-m-d')],['end_date','End date','date',false,null,date('Y-m-d',strtotime('+1 year'))],['status','Status','select',true,$this->simpleOptions(['draft'=>'Draft','active'=>'Active','expired'=>'Expired','terminated'=>'Terminated'])],['renewal_type','Renewal','select',true,$this->simpleOptions(['manual'=>'Manual','automatic'=>'Automatic','none'=>'No renewal'])],['payment_terms','Payment terms','textarea',false],['cancellation_terms','Cancellation terms','textarea',false],['scope','Scope','textarea',true]]]; }
     private function projectPage(array $o): array { return ['title'=>'Projects','subtitle'=>'Organize client work and move directly into its delivery tasks.','route'=>'projects','addLabel'=>'New Project','action'=>'create_project','columns'=>[['name','Project','strong'],['business_name','Client','text'],['project_type','Type','text'],['status','Status','badge'],['progress','Tasks','progress'],['start_date','Started','date']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['name','Project name','text',true],['project_type','Type','select',true,$this->simpleOptions(array_combine(['Website','Branding','Social Media','Photography','Videography','SEO','Business Development','Marketing','E-commerce','Consulting'],['Website','Branding','Social Media','Photography','Videography','SEO','Business Development','Marketing','E-commerce','Consulting']))],['start_date','Start date','date',true,null,date('Y-m-d')],['notes','Notes','textarea',false]]]; }
-    private function taskPage(array $o): array { return ['title'=>'Tasks','subtitle'=>'Assign, filter, and complete client delivery work.','route'=>'tasks','addLabel'=>'New Task','action'=>'create_task','columns'=>[['title','Task','strong'],['business_name','Client','text'],['project_name','Project','text'],['assignee','Assignee','text'],['status','Status','status_form'],['priority','Priority','priority'],['due_date','Due date','date']], 'fields'=>[['project_id','Project','select',true,$o['projects']],['assigned_employee_id','Assignee','select',false,$o['employees']],['title','Task title','text',true],['description','Description','textarea',false],['due_date','Due date','date',false],['priority','Priority','select',true,$this->simpleOptions(['low'=>'Low','medium'=>'Medium','high'=>'High','urgent'=>'Urgent'])]]]; }
+    private function taskPage(array $o): array { return ['title'=>'Tasks','subtitle'=>'Assign one task to multiple people, filter work, and track every change.','route'=>'tasks','addLabel'=>'New Task','action'=>'create_task','columns'=>[['title','Task','strong'],['business_name','Client','text'],['project_name','Project','text'],['assignee','Assignees','text'],['status','Status','status_form'],['priority','Priority','priority'],['due_date','Due date','date']], 'fields'=>[['project_id','Project','select',true,$o['projects']],['assigned_employee_ids','Assignees','multiselect',false,$o['employees']],['title','Task title','text',true],['description','Description','textarea',false],['due_date','Due date','date',false],['priority','Priority','select',true,$this->simpleOptions(['low'=>'Low','medium'=>'Medium','high'=>'High','urgent'=>'Urgent'])]]]; }
     private function visitPage(array $o): array { return ['title'=>'Content Visits','subtitle'=>'Schedule production and automatically meter package allowances.','route'=>'visits','addLabel'=>'Schedule Visit','action'=>'create_visit','columns'=>[['business_name','Client','text'],['visit_date','Date','date'],['time','Time','visit_time'],['purpose','Purpose','text'],['assignee','Assigned to','text'],['status','Status','badge'],['usage','Allowance','usage'],['additional_charge','Charge','money']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['subscription_id','Subscription','select',false,$o['subscriptions']],['assigned_employee_id','Assigned employee','select',false,$o['employees']],['visit_date','Visit date','date',true],['start_time','Start time','time',false],['end_time','End time','time',false],['visit_type','Visit type','select',true,$this->simpleOptions(['Content production'=>'Content production','Photography'=>'Photography','Videography'=>'Videography','Campaign shoot'=>'Campaign shoot'])],['purpose','Purpose','textarea',false],['equipment','Equipment','text',false],['notes','Notes','textarea',false]]]; }
     private function contentPage(array $o): array { return ['title'=>'Content Calendar','subtitle'=>'Plan, approve, and publish content across every client.','route'=>'content','addLabel'=>'New Content','action'=>'create_content','columns'=>[['title','Content','strong'],['business_name','Client','text'],['platform','Platform','text'],['content_type','Format','text'],['scheduled_at','Scheduled','datetime'],['status','Status','content_status'],['approval_status','Approval','approval_form'],['assignee','Owner','text']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['project_id','Project','select',false,$o['projects']],['assigned_employee_id','Assigned employee','select',false,$o['employees']],['title','Content title','text',true],['platform','Platform','select',true,$this->simpleOptions(array_combine(['Instagram','Facebook','TikTok','LinkedIn','Google Business','YouTube'],['Instagram','Facebook','TikTok','LinkedIn','Google Business','YouTube']))],['content_type','Format','select',true,$this->simpleOptions(array_combine(['Post','Carousel','Reel','Story','Video','Photo'],['Post','Carousel','Reel','Story','Video','Photo']))],['caption','Caption','textarea',false],['hashtags','Hashtags','text',false],['scheduled_at','Scheduled at','datetime-local',false]]]; }
     private function invoicePage(array $o): array { return ['title'=>'Invoices & Payments','subtitle'=>'Track billing, collections, and outstanding balances.','route'=>'invoices','addLabel'=>'New Invoice','action'=>'create_invoice','columns'=>[['invoice_number','Invoice','strong'],['business_name','Client','text'],['issue_date','Issued','date'],['due_date','Due','date'],['total','Total','money'],['amount_paid','Paid','money'],['amount_due','Balance','money'],['status','Status','invoice_status']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['project_id','Project','select',false,$o['projects']],['package_id','Package','select',false,$o['packages']],['description','Line item','textarea',true],['amount','Subtotal','number',true],['discount','Discount','number',false,null,0],['tax_percent','Tax %','number',false,null,0],['due_date','Due date','date',true,null,date('Y-m-d',strtotime('+14 days'))],['notes','Notes','textarea',false]]]; }
