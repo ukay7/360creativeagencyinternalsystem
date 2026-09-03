@@ -50,6 +50,7 @@ final class Auth
         $data['role_name'] = $role->name ?? 'User';
         $data['role_slug'] = $role->slug ?? '';
         $data['employee_id'] = DB::table('employees')->where('user_id', $user->id)->value('id');
+        $data['client_id'] = DB::table('clients')->where('portal_user_id', $user->id)->value('id');
 
         return $data;
     }
@@ -60,8 +61,17 @@ final class Auth
         if (! $user) {
             return false;
         }
-        if (DB::table('roles')->where('id', $user->role_id)->value('slug') === 'super_admin') {
+        $roleSlug = (string) DB::table('roles')->where('id', $user->role_id)->value('slug');
+        if ($roleSlug === 'super_admin') {
             return true;
+        }
+
+        // Client accounts are permanently isolated from internal CRM modules, even
+        // if a permission is accidentally granted through the settings screen.
+        if ($roleSlug === 'client' && ! in_array($permission, [
+            'dashboard.access', 'projects.access', 'tasks.access', 'calendar.access',
+        ], true)) {
+            return false;
         }
 
         $permissionId = DB::table('permissions')->where('slug', $permission)->value('id');
@@ -127,6 +137,36 @@ final class Auth
         }
 
         usort($navigation, static fn (array $left, array $right): int => $left['root_position'] <=> $right['root_position']);
+
+        if (($this->user()['role_slug'] ?? '') === 'client') {
+            foreach ($navigation as &$node) {
+                if (($node['type'] ?? '') === 'group' && ($node['slug'] ?? '') === 'project_delivery') {
+                    $node['label'] = 'My Work';
+                }
+                $items = ($node['type'] ?? '') === 'group' ? $node['children'] : [&$node];
+                foreach ($items as &$item) {
+                    $item['label'] = match ($item['module'] ?? '') {
+                        'dashboard' => 'Portal Home',
+                        'projects' => 'My Projects',
+                        'tasks' => 'My Tasks',
+                        'calendar' => 'My Calendar',
+                        default => $item['label'],
+                    };
+                }
+                unset($item);
+                if (($node['type'] ?? '') === 'group') { $node['children'] = $items; }
+            }
+            unset($node);
+        }
+
+        $navigation[] = [
+            'type'=>'item',
+            'module'=>'change_password',
+            'route'=>'change_password',
+            'label'=>'Change Password',
+            'icon'=>'fal fa-key',
+            'root_position'=>999,
+        ];
 
         return $navigation;
     }

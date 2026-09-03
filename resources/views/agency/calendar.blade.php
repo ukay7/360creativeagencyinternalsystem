@@ -9,6 +9,7 @@ $eventColors = ['task'=>'primary','visit'=>'success','content'=>'purple','deadli
 $eventLabels = ['task'=>'Task','visit'=>'Content visit','content'=>'Content item','deadline'=>'Project deadline','renewal'=>'Subscription renewal'];
 $eventIcons = ['task'=>'check-square','visit'=>'camera','content'=>'photo-video','deadline'=>'flag','renewal'=>'sync'];
 $isAdminView=in_array(($auth->user()['role_slug']??''),['super_admin','admin'],true);
+$isClientView=($auth->user()['role_slug']??'')==='client';
 $statusClass = static function(string $status): string {
     if(in_array($status,['completed','approved','published','active','confirmed'],true)) return 'success';
     if(in_array($status,['cancelled','rejected','overdue'],true)) return 'danger';
@@ -35,7 +36,7 @@ foreach ($events as &$event) {
     if($event['_time_label']!==''){$details[]=['Time',$event['_time_label']];}
     $details[]=['Client',(string)($event['client_name']??'Not linked')];
     if(!empty($event['project_name'])){$details[]=['Project',(string)$event['project_name']];}
-    if(in_array($type,['task','visit','content','deadline'],true)){$details[]=['Assigned to',(string)($event['employee_name']??'Unassigned')];}
+    if(!$isClientView&&in_array($type,['task','visit','content','deadline'],true)){$details[]=['Assigned to',(string)($event['employee_name']??'Unassigned')];}
     $details[]=['Status',$event['_status_label']];
     if($type==='task'){
         $details[]=['Priority',$humanize((string)($event['priority']??'medium'))];
@@ -77,25 +78,26 @@ foreach ($events as &$event) {
         if(!empty($event['hashtags'])){$sections[]=['Hashtags',(string)$event['hashtags']];}
         if(!empty($event['approval_comments'])){$sections[]=['Approval comments',(string)$event['approval_comments']];}
     }
-    if($type==='deadline'&&!empty($event['description'])){$sections[]=['Project notes',(string)$event['description']];}
+    if(!$isClientView&&$type==='deadline'&&!empty($event['description'])){$sections[]=['Project notes',(string)$event['description']];}
     $event['_sections']=$sections;
     $eventsByDay[(int)date('j',strtotime((string)$event['event_date']))][]=$event;
 }
 unset($event);
 ?>
 <div class="page-title-wrap">
-    <div><span class="eyebrow"><?= $isAdminView?'SHARED SCHEDULE':'MY DELIVERY SCHEDULE' ?></span><h1>Agency Calendar</h1><p><?= $isAdminView?'Tasks, shoots, content, deadlines, and renewals in one operational view.':'Your assigned tasks and delivery work, alongside the projects your team is delivering.' ?></p></div>
+    <div><span class="eyebrow"><?= $isClientView?'CLIENT DELIVERY SCHEDULE':($isAdminView?'SHARED SCHEDULE':'MY DELIVERY SCHEDULE') ?></span><h1><?= $isClientView?'My Project Calendar':'Agency Calendar' ?></h1><p><?= $isClientView?'Task due dates and project milestones for your account, without internal team information.':($isAdminView?'Tasks, shoots, content, deadlines, and renewals in one operational view.':'Your assigned tasks and delivery work, alongside the projects your team is delivering.') ?></p></div>
     <div><a class="btn btn-outline-secondary" href="<?= e(agency_url('calendar',['month'=>$previous])) ?>"><i class="fal fa-chevron-left"></i></a><a class="btn btn-outline-secondary mx-1" href="<?= e(agency_url('calendar',['month'=>date('Y-m')])) ?>">Today</a><a class="btn btn-outline-secondary" href="<?= e(agency_url('calendar',['month'=>$next])) ?>"><i class="fal fa-chevron-right"></i></a></div>
 </div>
-<section class="panel"><div class="panel-hdr"><h2><?= e($start->format('F Y')) ?></h2><div class="panel-toolbar"><div class="d-flex">
-    <select class="custom-select custom-select-sm mr-2" data-calendar-filter="event"><option value="">All event types</option><option value="task">Tasks</option><option value="visit">Visits</option><option value="content">Content</option><option value="deadline">Deadlines</option><option value="renewal">Renewals</option></select>
+<section class="panel calendar-workspace"><div class="panel-hdr calendar-toolbar"><div><h2><?= e($start->format('F Y')) ?></h2><small class="text-muted">Filter the schedule without leaving the month.</small></div><div class="panel-toolbar"><div class="d-flex flex-wrap justify-content-end">
+    <select class="custom-select custom-select-sm mr-2" data-calendar-filter="event"><option value="">All event types</option><option value="task">Tasks</option><?php if(!$isClientView): ?><option value="visit">Visits</option><option value="content">Content</option><?php endif; ?><option value="deadline">Deadlines</option><?php if(!$isClientView): ?><option value="renewal">Renewals</option><?php endif; ?></select>
     <?php if($isAdminView): ?><select class="custom-select custom-select-sm mr-2" data-calendar-filter="employee"><option value="">All employees</option><?php foreach($options['employees'] as $employee): ?><option value="<?= (int)$employee['id'] ?>"><?= e($employee['name']) ?></option><?php endforeach; ?></select><?php endif; ?>
-    <select class="custom-select custom-select-sm" data-calendar-filter="client"><option value="">All clients</option><?php foreach($options['clients'] as $client): ?><option value="<?= (int)$client['id'] ?>"><?= e($client['name']) ?></option><?php endforeach; ?></select>
+    <?php if(!$isClientView): ?><select class="custom-select custom-select-sm mr-2" data-calendar-filter="client"><option value="">All clients</option><?php foreach($options['clients'] as $client): ?><option value="<?= (int)$client['id'] ?>"><?= e($client['name']) ?></option><?php endforeach; ?></select><?php endif; ?>
+    <select class="custom-select custom-select-sm" data-calendar-filter="project"><option value="">All projects</option><?php foreach($options['projects'] as $project): ?><option value="<?= (int)$project['id'] ?>"><?= e($project['name'].(!$isClientView&&!empty($project['client_name'])?' · '.$project['client_name']:'')) ?></option><?php endforeach; ?></select>
 </div></div></div><div class="panel-container show"><div class="panel-content p-0"><div class="agency-calendar"><div class="calendar-weekdays"><?php foreach(['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] as $weekday): ?><div><?= e($weekday) ?></div><?php endforeach; ?></div><div class="calendar-grid">
 <?php for($i=0;$i<$offset;$i++): ?><div class="calendar-day muted"></div><?php endfor; ?>
 <?php for($day=1;$day<=$days;$day++): $isToday=$month.'-'.str_pad((string)$day,2,'0',STR_PAD_LEFT)===date('Y-m-d'); ?>
     <div class="calendar-day <?= $isToday?'today':'' ?>"><div class="calendar-date"><?= $day ?></div><div class="calendar-events">
-    <?php foreach($eventsByDay[$day]??[] as $event): ?><button type="button" class="calendar-event event-<?= e($eventColors[$event['event_type']]??'primary') ?>" data-calendar-event data-type="<?= e($event['event_type']) ?>" data-employee="<?= e($event['employee_ids']??$event['employee_id']??'') ?>" data-client="<?= e($event['client_id']??'') ?>" data-project="<?= e($event['project_id']??'') ?>" data-toggle="modal" data-target="#<?= e($event['_modal_id']) ?>" aria-label="Open <?= e($event['title']) ?> details"><span class="calendar-event-line"><i class="fal fa-<?= e($event['_icon']) ?>"></i><strong><?= e($event['title']) ?></strong></span><span class="calendar-event-meta"><?= e($event['client_name']) ?><?= $event['_time_label']!==''?' · '.e($event['_time_label']):'' ?></span></button><?php endforeach; ?>
+    <?php foreach($eventsByDay[$day]??[] as $event): ?><button type="button" class="calendar-event event-<?= e($eventColors[$event['event_type']]??'primary') ?>" data-calendar-event data-type="<?= e($event['event_type']) ?>" data-employee="<?= e($event['employee_ids']??$event['employee_id']??'') ?>" data-client="<?= e($event['client_id']??'') ?>" data-project="<?= e($event['project_id']??'') ?>" data-toggle="modal" data-target="#<?= e($event['_modal_id']) ?>" aria-label="Open <?= e($event['title']) ?> details"><span class="calendar-event-line"><i class="fal fa-<?= e($event['_icon']) ?>"></i><strong><?= e($event['title']) ?></strong></span><span class="calendar-event-meta"><?= e($isClientView?($event['project_name']??$event['client_name']):$event['client_name']) ?><?= $event['_time_label']!==''?' · '.e($event['_time_label']):'' ?></span></button><?php endforeach; ?>
     </div></div>
 <?php endfor; ?>
 </div></div></div></div></section>
@@ -106,6 +108,6 @@ unset($event);
     <div class="modal-header calendar-detail-header"><div class="calendar-detail-heading"><span class="calendar-detail-icon event-<?= e($eventColors[$event['event_type']]??'primary') ?>"><i class="fal fa-<?= e($event['_icon']) ?>"></i></span><div><span class="eyebrow mb-1"><?= e(strtoupper($event['_type_label'])) ?></span><h2 class="modal-title" id="<?= e($event['_modal_id']) ?>-title"><?= e($event['title']) ?></h2><p class="mb-0"><?= e($event['client_name'].' · '.$event['_date_label'].($event['_time_label']!==''?' · '.$event['_time_label']:'')) ?></p></div></div><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>
     <div class="modal-body calendar-detail-body"><div class="calendar-detail-status"><span class="badge badge-soft-<?= e($event['_status_class']) ?>"><?= e($event['_status_label']) ?></span></div><div class="calendar-detail-grid"><?php foreach($event['_details'] as [$label,$value]): ?><div><span><?= e($label) ?></span><strong><?= e($value) ?></strong></div><?php endforeach; ?></div>
     <?php if($event['_sections']): ?><div class="calendar-detail-sections"><?php foreach($event['_sections'] as [$heading,$body]): ?><section><h3><?= e($heading) ?></h3><p><?= nl2br(e($body)) ?></p></section><?php endforeach; ?></div><?php endif; ?></div>
-    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Close</button><?php if(!empty($event['client_id'])): ?><a class="btn btn-outline-primary" href="<?= e(agency_url('client',['id'=>(int)$event['client_id']])) ?>"><i class="fal fa-building mr-1"></i> Open client</a><?php endif; ?><?php if(!empty($event['project_id'])): ?><a class="btn btn-primary" href="<?= e(agency_url('tasks',['project_id'=>(int)$event['project_id'],'table_search'=>$event['event_type']==='task'?strtolower((string)$event['title']):''])) ?>"><i class="fal fa-tasks mr-1"></i> Open project tasks</a><?php endif; ?></div>
+    <div class="modal-footer"><button type="button" class="btn btn-outline-secondary" data-dismiss="modal">Close</button><?php if(!$isClientView&&!empty($event['client_id'])): ?><a class="btn btn-outline-primary" href="<?= e(agency_url('client',['id'=>(int)$event['client_id']])) ?>"><i class="fal fa-building mr-1"></i> Open client</a><?php endif; ?><?php if(!empty($event['project_id'])): ?><a class="btn btn-primary" href="<?= e(agency_url('tasks',['project_id'=>(int)$event['project_id'],'q'=>$event['event_type']==='task'?(string)$event['title']:''])) ?>"><i class="fal fa-tasks mr-1"></i> Open project tasks</a><?php endif; ?></div>
 </div></div></div>
 <?php endforeach; ?>

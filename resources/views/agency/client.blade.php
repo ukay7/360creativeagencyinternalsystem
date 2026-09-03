@@ -50,6 +50,41 @@ $usage=$client['visit_usage']; $profit=$client['profitability'];
     </div>
     <div class="col-lg-4">
         <section class="panel"><div class="panel-hdr"><h2>Client health</h2></div><div class="panel-container show"><div class="panel-content"><form method="post" action="<?= e(url('client',['id'=>$client['id']])) ?>"><input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="update_health"><input type="hidden" name="client_id" value="<?= (int)$client['id'] ?>"><div class="form-group"><label>Status</label><select class="custom-select" name="health"><?php foreach($healthLabels as $id=>$label): ?><option value="<?= e($id) ?>" <?= $client['health']===$id?'selected':'' ?>><?= e($label) ?></option><?php endforeach; ?></select></div><div class="form-group"><label>Health notes</label><textarea class="form-control" name="health_notes" rows="4"><?= e($client['health_notes']) ?></textarea></div><button class="btn btn-primary btn-block">Update health</button></form></div></div></section>
+        <section class="panel client-portal-access-panel"><div class="panel-hdr"><div><h2>Client portal access</h2><small><?= $client['portal_user_id']?'Login is configured':'Create a secure client login' ?></small></div><div class="panel-toolbar"><span class="badge badge-soft-<?= ($client['portal_user_status']??'inactive')==='active'?'success':'secondary' ?>"><?= e(ucfirst($client['portal_user_status']??'not configured')) ?></span></div></div><div class="panel-container show"><div class="panel-content">
+            <p class="text-muted fs-sm">The client sees only their projects, task statuses, client-visible updates, calendar dates, and deliverables. Team names and internal notes stay private.</p>
+            <?php if($client['portal_user_id']): ?>
+                <div class="client-credential-vault mb-4">
+                    <div class="d-flex align-items-center justify-content-between mb-3"><strong><i class="fal fa-user-shield mr-2"></i>Login credentials</strong><span class="badge badge-soft-primary">Protected</span></div>
+                    <div class="form-group"><label>Login email</label><div class="input-group"><input class="form-control" id="client-login-email" value="<?= e($client['portal_user_email']) ?>" readonly><div class="input-group-append"><button class="btn btn-outline-secondary" type="button" data-copy-target="client-login-email" title="Copy email"><i class="fal fa-copy"></i></button></div></div></div>
+                    <div class="form-group mb-2"><label>Current temporary password</label>
+                        <?php if($client['portal_temporary_password']): ?>
+                            <div class="input-group password-field-group"><input class="form-control" id="client-temporary-password" type="password" value="<?= e($client['portal_temporary_password']) ?>" readonly><div class="input-group-append"><button class="btn btn-outline-secondary password-visibility-toggle" type="button" data-password-toggle="client-temporary-password" aria-label="Show password"><i class="fal fa-eye"></i></button><button class="btn btn-outline-secondary" type="button" data-copy-target="client-temporary-password" title="Copy password"><i class="fal fa-copy"></i></button></div></div>
+                            <small class="form-text text-muted">This temporary password remains available here until the client changes it.</small>
+                        <?php else: ?>
+                            <div class="credential-changed-state"><i class="fal fa-check-circle mr-2"></i>The client has changed their password, or this login predates protected credentials. Reset it below to issue a new temporary password.</div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+            <form method="post" action="<?= e(url('client',['id'=>$client['id']])) ?>">
+                <input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="save_client_portal_access"><input type="hidden" name="client_id" value="<?= (int)$client['id'] ?>">
+                <div class="form-group"><label class="required" for="portal_name">Client display name</label><input class="form-control" id="portal_name" name="name" value="<?= e($client['portal_user_name']?:$client['name']) ?>" required maxlength="120"></div>
+                <div class="form-group"><label class="required" for="portal_email">Login email</label><input class="form-control" id="portal_email" type="email" name="email" value="<?= e($client['portal_user_email']?:$client['email']) ?>" required></div>
+                <?php if(!$client['portal_user_id']): ?><div class="form-group"><label for="portal_password">Temporary password <span class="text-muted">(optional)</span></label><div class="input-group password-field-group"><input class="form-control" id="portal_password" type="password" name="password" minlength="10" autocomplete="new-password" placeholder="Leave blank to generate securely"><div class="input-group-append"><button class="btn btn-outline-secondary password-visibility-toggle" type="button" data-password-toggle="portal_password" aria-label="Show password"><i class="fal fa-eye"></i></button></div></div></div><?php endif; ?>
+                <div class="form-group"><label class="required" for="portal_status">Access status</label><select class="custom-select" id="portal_status" name="status" required><option value="active" <?= ($client['portal_user_status']??'active')==='active'?'selected':'' ?>>Active</option><option value="inactive" <?= ($client['portal_user_status']??'')==='inactive'?'selected':'' ?>>Inactive</option></select></div>
+                <?php if(!empty($client['portal_last_login_at'])): ?><small class="text-muted d-block mb-3"><i class="fal fa-clock mr-1"></i>Last login <?= e(date('M j, Y · g:i A',strtotime($client['portal_last_login_at']))) ?></small><?php endif; ?>
+                <button class="btn btn-primary btn-block"><i class="fal fa-user-lock mr-1"></i><?= $client['portal_user_id']?'Update portal access':'Create portal login' ?></button>
+            </form>
+            <?php if($client['portal_user_id']): ?>
+                <hr class="my-4">
+                <form method="post" action="<?= e(url('client',['id'=>$client['id']])) ?>">
+                    <input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>"><input type="hidden" name="action" value="reset_client_portal_password"><input type="hidden" name="client_id" value="<?= (int)$client['id'] ?>">
+                    <div class="form-group"><label for="portal_reset_password">Reset temporary password</label><div class="input-group password-field-group"><input class="form-control" id="portal_reset_password" type="password" name="password" minlength="10" autocomplete="new-password" placeholder="Leave blank to generate securely"><div class="input-group-append"><button class="btn btn-outline-secondary password-visibility-toggle" type="button" data-password-toggle="portal_reset_password" aria-label="Show password"><i class="fal fa-eye"></i></button></div></div><small class="form-text text-muted">Resetting immediately replaces the client’s current login password.</small></div>
+                    <button class="btn btn-outline-primary btn-block" type="submit"><i class="fal fa-redo mr-1"></i>Reset client password</button>
+                </form>
+            <?php endif; ?>
+            <div class="portal-password-note mt-3"><i class="fal fa-info-circle mr-2"></i>Ask the client to open <strong>Change Password</strong> from the sidebar after their first login.</div>
+        </div></div></section>
         <section class="panel"><div class="panel-hdr"><h2>Contacts</h2></div><div class="panel-container show"><div class="panel-content"><?php foreach($client['contacts'] as $contact): ?><div class="d-flex align-items-center mb-3"><span class="avatar-sm mr-2"><?= e(strtoupper(substr($contact['name'],0,1))) ?></span><div><strong class="d-block fs-sm"><?= e($contact['name']) ?></strong><small class="text-muted"><?= e($contact['title']) ?><?= $contact['primary_contact']?' · Primary':'' ?></small></div></div><?php endforeach; ?></div></div></section>
     </div>
 </div></div>

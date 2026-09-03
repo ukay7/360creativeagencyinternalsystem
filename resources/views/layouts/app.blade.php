@@ -6,6 +6,7 @@ $uiLocales = (array) config('ui_languages.locales');
 $uiLocale = (string) session('ui_locale', config('ui_languages.default', 'en'));
 $uiLocale = array_key_exists($uiLocale, $uiLocales) ? $uiLocale : 'en';
 $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
+$isClientPortal = ($user['role_slug'] ?? '') === 'client';
 ?>
 <!DOCTYPE html>
 <html lang="<?= e($uiLocale) ?>" dir="<?= e($uiDirection) ?>">
@@ -30,7 +31,7 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
             <div class="page-logo">
                 <a href="<?= e(url('dashboard')) ?>" class="page-logo-link d-flex align-items-center">
                     <img class="brand-logo" src="<?= e(asset('img/360-logo-final-exact.png')) ?>" alt="360 Creative Agency logo">
-                    <span class="page-logo-text ml-2">360 Creative Agency</span>
+                    <span class="page-logo-text ml-2"><?= $isClientPortal?'Client Portal':'360 Creative Agency' ?></span>
                 </a>
             </div>
             <nav id="js-primary-nav" class="primary-nav" role="navigation">
@@ -54,7 +55,7 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                             <?php
                             $groupActive = false;
                             foreach ($node['children'] as $child) {
-                                if ($currentRoute === $child['module'] || ($currentRoute === 'client' && $child['module'] === 'clients') || ($currentRoute === 'quote_view' && $child['module'] === 'saved_quotes')) {
+                                if ($currentRoute === $child['module'] || ($currentRoute === 'client' && $child['module'] === 'clients') || ($currentRoute === 'quote_view' && $child['module'] === 'saved_quotes') || ($currentRoute === 'invoice' && $child['module'] === 'invoices')) {
                                     $groupActive = true;
                                     break;
                                 }
@@ -66,7 +67,7 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                                 </a>
                                 <ul>
                                     <?php foreach ($node['children'] as $item): ?>
-                                        <?php $itemActive = $currentRoute === $item['module'] || ($currentRoute === 'client' && $item['module'] === 'clients') || ($currentRoute === 'quote_view' && $item['module'] === 'saved_quotes'); ?>
+                                        <?php $itemActive = $currentRoute === $item['module'] || ($currentRoute === 'client' && $item['module'] === 'clients') || ($currentRoute === 'quote_view' && $item['module'] === 'saved_quotes') || ($currentRoute === 'invoice' && $item['module'] === 'invoices'); ?>
                                         <li class="<?= $itemActive ? 'active' : '' ?>">
                                             <a href="<?= e(url($item['route'])) ?>" title="<?= e($item['label']) ?>" data-filter-tags="<?= e(strtolower($item['label'])) ?>">
                                                 <i class="<?= e($item['icon']) ?>"></i><span class="nav-link-text"><?= e($item['label']) ?></span>
@@ -76,7 +77,7 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                                 </ul>
                             </li>
                         <?php else: ?>
-                            <?php $itemActive = $currentRoute === $node['module'] || ($currentRoute === 'client' && $node['module'] === 'clients') || ($currentRoute === 'quote_view' && $node['module'] === 'saved_quotes'); ?>
+                            <?php $itemActive = $currentRoute === $node['module'] || ($currentRoute === 'client' && $node['module'] === 'clients') || ($currentRoute === 'quote_view' && $node['module'] === 'saved_quotes') || ($currentRoute === 'invoice' && $node['module'] === 'invoices'); ?>
                             <li class="<?= $itemActive ? 'active' : '' ?>">
                                 <a href="<?= e(url($node['route'])) ?>" title="<?= e($node['label']) ?>" data-filter-tags="<?= e(strtolower($node['label'])) ?>">
                                     <i class="<?= e($node['icon']) ?>"></i><span class="nav-link-text"><?= e($node['label']) ?></span>
@@ -98,10 +99,10 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                     <a href="<?= e(url('dashboard')) ?>" class="page-logo-link"><img class="brand-logo" src="<?= e(asset('img/360-logo-final-exact.png')) ?>" alt="360 Creative Agency logo"><span class="page-logo-text ml-2">360 Creative Agency</span></a>
                 </div>
                 <div class="hidden-lg-up"><a href="#" class="header-btn btn press-scale-down" data-action="toggle" data-class="mobile-nav-on"><i class="ni ni-menu"></i></a></div>
-                <form class="app-search d-none d-md-flex" action="<?= e(url('search')) ?>" method="get" role="search">
+                <?php if(!$isClientPortal): ?><form class="app-search d-none d-md-flex" action="<?= e(url('search')) ?>" method="get" role="search">
                     <input type="search" name="q" class="form-control" placeholder="Search clients, leads, projects, invoices…" value="<?= e($_GET['q'] ?? '') ?>" required minlength="2" aria-label="Global search">
                     <button type="submit" class="btn-search-close" aria-label="Search"><i class="fal fa-search"></i></button>
-                </form>
+                </form><?php else: ?><div class="client-portal-header-title d-none d-md-flex"><i class="fal fa-shield-check mr-2"></i>Secure client workspace</div><?php endif; ?>
                 <div class="ml-auto d-flex align-items-center">
                     <form method="post" action="<?= e(route('ui.language')) ?>" class="ui-language-switcher mr-2" data-ui-no-translate>
                         @csrf
@@ -112,7 +113,7 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                             <?php endforeach; ?>
                         </select>
                     </form>
-                    <div class="dropdown mr-2">
+                    <?php if(!$isClientPortal): ?><div class="dropdown mr-2">
                         <button class="btn btn-primary btn-sm rounded-pill px-3" data-toggle="dropdown"><i class="fal fa-plus mr-1"></i> Quick add</button>
                         <div class="dropdown-menu dropdown-menu-right p-2 quick-menu">
                             <?php foreach ([['quote_studio','file-invoice-dollar','Quote'],['projects','briefcase','Project'],['tasks','check-square','Task'],['invoices','file-invoice-dollar','Invoice']] as $quick): ?>
@@ -120,11 +121,12 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                             <?php endforeach; ?>
                         </div>
                     </div>
-                    <a href="<?= e(url('search')) ?>" class="header-icon d-md-none" aria-label="Search"><i class="fal fa-search"></i></a>
+                    <a href="<?= e(url('search')) ?>" class="header-icon d-md-none" aria-label="Search"><i class="fal fa-search"></i></a><?php endif; ?>
                     <div class="dropdown">
                         <a href="#" data-toggle="dropdown" class="header-icon d-flex align-items-center justify-content-center ml-2" aria-label="Account menu"><span class="avatar-sm"><?= e(strtoupper(substr($user['name'],0,1))) ?></span></a>
                         <div class="dropdown-menu dropdown-menu-right p-2">
                             <div class="px-3 py-2 border-bottom mb-2"><strong class="d-block"><?= e($user['name']) ?></strong><small class="text-muted"><?= e($user['email']) ?></small></div>
+                            <a class="dropdown-item" href="<?= e(url('change_password')) ?>"><i class="fal fa-key mr-2"></i>Change password</a>
                             <form action="<?= e(url($currentRoute)) ?>" method="post">
                                 <?= \AgencyOS\Csrf::field() ?><input type="hidden" name="action" value="logout">
                                 <button class="dropdown-item text-danger" type="submit"><i class="fal fa-sign-out mr-2"></i>Sign out</button>
@@ -143,8 +145,8 @@ $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
                 @include($contentView)
             </main>
             <footer class="page-footer" role="contentinfo">
-                <div class="d-flex align-items-center flex-1 text-muted"><span>360 Creative Agency · Internal Operations</span></div>
-                <div><a href="<?= e(url('audit')) ?>" class="text-muted">Audit trail</a></div>
+                <div class="d-flex align-items-center flex-1 text-muted"><span>360 Creative Agency · <?= $isClientPortal?'Secure Client Portal':'Internal Operations' ?></span></div>
+                <?php if(!$isClientPortal): ?><div><a href="<?= e(url('audit')) ?>" class="text-muted">Audit trail</a></div><?php endif; ?>
             </footer>
         </div>
     </div>

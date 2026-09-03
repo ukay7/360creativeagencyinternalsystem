@@ -269,6 +269,7 @@ final class QuoteStudioService
         $this->db->transaction(function () use ($quote, $clientId, $id): void {
             $this->db->execute("UPDATE proposals SET client_id=?,status='accepted',updated_at=? WHERE id=?", [$clientId,date('c'),$id]);
             $this->createDeliveryProjects($quote, $clientId);
+            (new AgencyService($this->db, $this->auth))->ensureClientPortalAccess($clientId);
         });
         $this->audit('quote.onboarded', 'Quote '.$id.' accepted and client '.$clientId.' onboarded', 'proposal', $id);
         return $clientId;
@@ -763,6 +764,10 @@ final class QuoteStudioService
         }
         $opportunityId = max(0,(int)($existing['opportunity_id'] ?? 0)) ?: null;
         if ($clientId) { return [$leadId,$clientId,$opportunityId]; }
+        $matchingClientId = (int)($this->db->scalar("SELECT c.id FROM clients c LEFT JOIN users pu ON pu.id=c.portal_user_id WHERE c.status='active' AND (LOWER(COALESCE(c.email,''))=? OR LOWER(COALESCE(pu.email,''))=?) ORDER BY c.id LIMIT 1", [$email,$email]) ?: 0);
+        if ($matchingClientId) {
+            return [null,$matchingClientId,$opportunityId];
+        }
         if (! $leadId) {
             $leadId = (int)($this->db->scalar('SELECT id FROM leads WHERE email=? AND converted_client_id IS NULL ORDER BY id DESC LIMIT 1', [$email]) ?: 0);
         }

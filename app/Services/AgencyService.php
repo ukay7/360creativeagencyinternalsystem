@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Crypt;
 use InvalidArgumentException;
 
 final class AgencyService
@@ -67,6 +69,85 @@ final class AgencyService
             'recent_activity' => $isAdmin
                 ? $this->db->all("SELECT a.action,a.entity_type,a.entity_id,a.created_at,u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity_type IN ('proposal','client','project','task') ORDER BY a.created_at DESC,a.id DESC LIMIT 8")
                 : ($employeeId ? $this->db->all("SELECT a.action,a.entity_type,a.entity_id,a.created_at,u.name AS user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id WHERE a.entity_type='task' AND EXISTS (SELECT 1 FROM project_task_assignees pta WHERE pta.task_id=a.entity_id AND pta.employee_id=?) ORDER BY a.created_at DESC,a.id DESC LIMIT 8", [$employeeId]) : []),
+        ];
+    }
+
+    public function clientPortalData(array $filters = []): array
+    {
+        $clientId = $this->currentClientId();
+        if (! $clientId) {
+            throw new InvalidArgumentException('This client login is not linked to an active client account.');
+        }
+
+        $client = $this->db->first("SELECT c.id,c.name,c.email,c.phone,c.status,c.joined_at,b.name AS business_name,b.industry,b.website FROM clients c JOIN businesses b ON b.id=c.business_id WHERE c.id=?", [$clientId]);
+        if (! $client) {
+            throw new InvalidArgumentException('The linked client account could not be found.');
+        }
+
+        $projects = $this->db->all("SELECT p.id,p.name,p.project_type,p.status,p.start_date,p.deadline,
+            COUNT(t.id) AS task_count,
+            SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks,
+            SUM(CASE WHEN t.status!='completed' THEN 1 ELSE 0 END) AS open_tasks,
+            MAX(COALESCE(t.completed_at,t.created_at)) AS last_activity_at
+            FROM projects p LEFT JOIN project_tasks t ON t.project_id=p.id
+            WHERE p.client_id=? GROUP BY p.id,p.name,p.project_type,p.status,p.start_date,p.deadline
+            ORDER BY CASE WHEN p.status IN ('completed','cancelled') THEN 1 ELSE 0 END,p.start_date DESC,p.id DESC", [$clientId]);
+
+        $where = ['t.client_id=?'];
+        $parameters = [$clientId];
+        if (($projectId = $this->nullableInt($filters['project_id'] ?? null))) {
+            $where[] = 't.project_id=?';
+            $parameters[] = $projectId;
+        }
+        if (($status = trim((string)($filters['status'] ?? ''))) !== '' && in_array($status, ['todo','in_progress','waiting','review','completed'], true)) {
+            $where[] = 't.status=?';
+            $parameters[] = $status;
+        }
+        if (($query = trim((string)($filters['q'] ?? ''))) !== '') {
+            $where[] = '(t.title LIKE ? OR t.description LIKE ? OR p.name LIKE ?)';
+            array_push($parameters, ...array_fill(0, 3, '%'.$query.'%'));
+        }
+        $tasks = $this->db->all("SELECT t.id,t.project_id,t.title,t.description,t.due_date,t.priority,t.status,t.completed_at,t.created_at,p.name AS project_name,
+            (SELECT COUNT(*) FROM task_files tf WHERE tf.task_id=t.id AND tf.visibility='client') AS deliverable_count,
+            (SELECT COUNT(*) FROM task_updates tu WHERE tu.task_id=t.id AND tu.visibility='client') AS update_count
+            FROM project_tasks t JOIN projects p ON p.id=t.project_id
+            WHERE ".implode(' AND ', $where)."
+            ORDER BY CASE t.status WHEN 'in_progress' THEN 1 WHEN 'review' THEN 2 WHEN 'waiting' THEN 3 WHEN 'todo' THEN 4 ELSE 5 END,t.due_date,t.id", $parameters);
+        foreach ($tasks as &$task) {
+            $task['updates'] = $this->taskUpdates((int)$task['id'], true);
+            $task['files'] = $this->taskFiles((int)$task['id'], true);
+        }
+        unset($task);
+
+        $recentUpdates = $this->db->all("SELECT tu.*,t.title AS task_title,p.name AS project_name,u.name AS author_name,r.slug AS author_role
+            FROM task_updates tu JOIN project_tasks t ON t.id=tu.task_id JOIN projects p ON p.id=t.project_id
+            LEFT JOIN users u ON u.id=tu.user_id LEFT JOIN roles r ON r.id=u.role_id
+            WHERE t.client_id=? AND tu.visibility='client' ORDER BY tu.id DESC LIMIT 8", [$clientId]);
+        foreach ($recentUpdates as &$update) { $update['author_label'] = $this->portalAuthorLabel($update); }
+        unset($update);
+
+        $deliverables = $this->db->all("SELECT tf.id,tf.task_id,tf.original_name,tf.mime_type,tf.file_size,tf.created_at,t.title AS task_title,p.name AS project_name
+            FROM task_files tf JOIN project_tasks t ON t.id=tf.task_id JOIN projects p ON p.id=t.project_id
+            WHERE t.client_id=? AND tf.visibility='client' ORDER BY tf.id DESC LIMIT 8", [$clientId]);
+
+        $totalTasks = array_sum(array_map(static fn(array $project): int => (int)$project['task_count'], $projects));
+        $completedTasks = array_sum(array_map(static fn(array $project): int => (int)$project['completed_tasks'], $projects));
+
+        return [
+            'client'=>$client,
+            'projects'=>$projects,
+            'tasks'=>$tasks,
+            'recent_updates'=>$recentUpdates,
+            'deliverables'=>$deliverables,
+            'summary'=>[
+                'projects'=>count($projects),
+                'active_projects'=>count(array_filter($projects, static fn(array $project): bool => ! in_array($project['status'], ['completed','cancelled'], true))),
+                'tasks'=>$totalTasks,
+                'completed_tasks'=>$completedTasks,
+                'open_tasks'=>max(0, $totalTasks-$completedTasks),
+                'deliverables'=>(int)$this->db->scalar("SELECT COUNT(*) FROM task_files tf JOIN project_tasks t ON t.id=tf.task_id WHERE t.client_id=? AND tf.visibility='client'", [$clientId]),
+                'progress'=>$totalTasks > 0 ? (int)round($completedTasks/$totalTasks*100) : 0,
+            ],
         ];
     }
 
@@ -153,7 +234,7 @@ final class AgencyService
 
     public function client(int $id): ?array
     {
-        $client = $this->db->first("SELECT c.*, b.name AS business_name, b.industry, b.website, b.employee_count, bs.name AS business_size, e.name AS account_manager, s.id AS subscription_id, s.monthly_price, s.renewal_date, p.name AS package_name, p.id AS package_id FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN business_sizes bs ON bs.id=b.business_size_id LEFT JOIN employees e ON e.id=c.account_manager_id LEFT JOIN subscriptions s ON s.client_id=c.id AND s.status='active' LEFT JOIN packages p ON p.id=s.package_id WHERE c.id=?", [$id]);
+        $client = $this->db->first("SELECT c.*, b.name AS business_name, b.industry, b.website, b.employee_count, bs.name AS business_size, e.name AS account_manager, s.id AS subscription_id, s.monthly_price, s.renewal_date, p.name AS package_name, p.id AS package_id, pu.name AS portal_user_name,pu.email AS portal_user_email,pu.status AS portal_user_status,pu.last_login_at AS portal_last_login_at FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN business_sizes bs ON bs.id=b.business_size_id LEFT JOIN employees e ON e.id=c.account_manager_id LEFT JOIN subscriptions s ON s.client_id=c.id AND s.status='active' LEFT JOIN packages p ON p.id=s.package_id LEFT JOIN users pu ON pu.id=c.portal_user_id WHERE c.id=?", [$id]);
         if (!$client) {
             return null;
         }
@@ -177,6 +258,15 @@ final class AgencyService
         $client['notes'] = $this->db->all('SELECT n.*, u.name AS user_name FROM notes n JOIN users u ON u.id=n.user_id WHERE n.client_id=? ORDER BY n.created_at DESC', [$id]);
         $client['visit_usage'] = $client['subscription_id'] ? $this->visitUsage((int) $client['subscription_id']) : null;
         $client['profitability'] = $this->clientProfitability($id);
+        $client['portal_temporary_password'] = null;
+        if ($this->isAdministrator() && ! empty($client['portal_password_encrypted'])) {
+            try {
+                $client['portal_temporary_password'] = Crypt::decryptString((string)$client['portal_password_encrypted']);
+            } catch (\Throwable) {
+                $client['portal_temporary_password'] = null;
+            }
+        }
+        unset($client['portal_password_encrypted']);
         return $client;
     }
 
@@ -295,6 +385,8 @@ final class AgencyService
         foreach ($rows as &$row) {
             $row['assignee_ids'] = array_values(array_filter(array_map('intval', explode(',', (string)($row['assignee_ids'] ?? '')))));
             $row['history'] = $this->taskHistory((int)$row['id']);
+            $row['updates'] = $this->taskUpdates((int)$row['id']);
+            $row['files'] = $this->taskFiles((int)$row['id']);
         }
         unset($row);
         return $rows;
@@ -324,9 +416,109 @@ final class AgencyService
         return $this->db->first('SELECT * FROM media WHERE id=?', [$id]);
     }
 
-    public function invoices(): array
+    public function invoices(array $filters = []): array
     {
-        return $this->db->all("SELECT i.*, b.name AS business_name, (i.total-i.amount_paid) AS amount_due FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id ORDER BY i.issue_date DESC");
+        $where = [];
+        $parameters = [];
+        if (($clientId = $this->nullableInt($filters['client_id'] ?? null))) { $where[]='i.client_id=?'; $parameters[]=$clientId; }
+        if (($projectId = $this->nullableInt($filters['project_id'] ?? null))) { $where[]='i.project_id=?'; $parameters[]=$projectId; }
+        if (($status = trim((string)($filters['status'] ?? ''))) !== '' && in_array($status, ['draft','sent','partially_paid','paid','overdue','cancelled'], true)) { $where[]='i.status=?'; $parameters[]=$status; }
+        if (($from = trim((string)($filters['from'] ?? ''))) !== '') { $where[]='i.issue_date>=?'; $parameters[]=$from; }
+        if (($to = trim((string)($filters['to'] ?? ''))) !== '') { $where[]='i.issue_date<=?'; $parameters[]=$to; }
+        $whereSql = $where ? ' WHERE '.implode(' AND ', $where) : '';
+        return $this->db->all("SELECT i.*,b.name AS business_name,c.name AS contact_name,c.email AS client_email,p.name AS project_name,ba.account_name AS bank_account_name,ba.bank_name,(i.total-i.amount_paid) AS amount_due,(SELECT COUNT(*) FROM invoice_items ii WHERE ii.invoice_id=i.id) AS item_count,(SELECT COUNT(*) FROM payments py WHERE py.invoice_id=i.id) AS payment_count FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN bank_accounts ba ON ba.id=i.bank_account_id{$whereSql} ORDER BY i.issue_date DESC,i.id DESC", $parameters);
+    }
+
+    public function invoice(int $id): ?array
+    {
+        $invoice = $this->db->first("SELECT i.*,b.name AS business_name,b.industry,c.name AS contact_name,c.email AS client_email,c.phone AS client_phone,p.name AS project_name,pk.name AS package_name,(i.total-i.amount_paid) AS amount_due FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN packages pk ON pk.id=i.package_id WHERE i.id=?", [$id]);
+        if (! $invoice) { return null; }
+        $invoice['items'] = $this->db->all('SELECT * FROM invoice_items WHERE invoice_id=? ORDER BY id', [$id]);
+        $invoice['payments'] = $this->db->all('SELECT p.*,u.name AS recorded_by_name FROM payments p LEFT JOIN users u ON u.id=p.recorded_by WHERE p.invoice_id=? ORDER BY p.payment_date DESC,p.id DESC', [$id]);
+        $invoice['bank_account'] = ! empty($invoice['bank_account_id']) ? $this->db->first('SELECT * FROM bank_accounts WHERE id=?', [(int)$invoice['bank_account_id']]) : null;
+        $invoice['profile'] = $this->invoiceProfile();
+        return $invoice;
+    }
+
+    public function invoiceProfile(): array
+    {
+        return $this->db->first('SELECT * FROM invoice_profiles ORDER BY id LIMIT 1') ?: [
+            'agency_name'=>'360 Creative Agency','address_line_1'=>'','address_line_2'=>'','city'=>'','province'=>'','postal_code'=>'','country'=>'Canada','email'=>'','phone'=>'','website'=>'','tax_number'=>'','authorized_signatory_name'=>'','authorized_signatory_title'=>'','signature_path'=>null,'default_payment_terms'=>'',
+        ];
+    }
+
+    public function bankAccounts(bool $activeOnly = false): array
+    {
+        return $this->db->all('SELECT * FROM bank_accounts'.($activeOnly ? ' WHERE active=1' : '').' ORDER BY is_default DESC,active DESC,account_name');
+    }
+
+    public function saveInvoiceProfile(array $input, ?UploadedFile $signature = null): void
+    {
+        $this->required($input, ['agency_name']);
+        if (! empty($input['email']) && ! filter_var($input['email'], FILTER_VALIDATE_EMAIL)) { throw new InvalidArgumentException('Enter a valid invoice contact email address.'); }
+        $profile = $this->db->first('SELECT * FROM invoice_profiles ORDER BY id LIMIT 1');
+        $signaturePath = $profile['signature_path'] ?? null;
+        if ($signature) {
+            if (! $signature->isValid()) { throw new InvalidArgumentException('Choose a valid signature image.'); }
+            if ((int)$signature->getSize() > 5 * 1024 * 1024) { throw new InvalidArgumentException('The signature image cannot be larger than 5 MB.'); }
+            $extension = strtolower((string)$signature->getClientOriginalExtension());
+            if (! in_array($extension, ['jpg','jpeg','png','webp'], true)) { throw new InvalidArgumentException('Use a JPG, PNG, or WebP signature image.'); }
+            $directory = storage_path('app/private/invoice-signatures');
+            if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) { throw new InvalidArgumentException('The signature folder could not be prepared.'); }
+            $name = 'signature-'.bin2hex(random_bytes(12)).'.'.$extension;
+            $signature->move($directory, $name);
+            $signaturePath = $name;
+        }
+        $values = [
+            'agency_name'=>trim((string)$input['agency_name']),
+            'address_line_1'=>trim((string)($input['address_line_1'] ?? '')) ?: null,
+            'address_line_2'=>trim((string)($input['address_line_2'] ?? '')) ?: null,
+            'city'=>trim((string)($input['city'] ?? '')) ?: null,
+            'province'=>trim((string)($input['province'] ?? '')) ?: null,
+            'postal_code'=>trim((string)($input['postal_code'] ?? '')) ?: null,
+            'country'=>trim((string)($input['country'] ?? '')) ?: null,
+            'email'=>trim((string)($input['email'] ?? '')) ?: null,
+            'phone'=>trim((string)($input['phone'] ?? '')) ?: null,
+            'website'=>trim((string)($input['website'] ?? '')) ?: null,
+            'tax_number'=>trim((string)($input['tax_number'] ?? '')) ?: null,
+            'authorized_signatory_name'=>trim((string)($input['authorized_signatory_name'] ?? '')) ?: null,
+            'authorized_signatory_title'=>trim((string)($input['authorized_signatory_title'] ?? '')) ?: null,
+            'signature_path'=>$signaturePath,
+            'default_payment_terms'=>trim((string)($input['default_payment_terms'] ?? '')) ?: null,
+            'updated_at'=>date('c'),
+        ];
+        if ($profile) { $this->db->update('invoice_profiles', (int)$profile['id'], $values); }
+        else { $this->db->insert('invoice_profiles', $values); }
+        $this->audit('updated', 'invoice_profile', (int)($profile['id'] ?? 1), $profile, $values);
+    }
+
+    public function saveBankAccount(array $input): int
+    {
+        $this->required($input, ['account_name','bank_name']);
+        $id = $this->nullableInt($input['bank_account_id'] ?? null);
+        $existing = $id ? $this->db->first('SELECT * FROM bank_accounts WHERE id=?', [$id]) : null;
+        if ($id && ! $existing) { throw new InvalidArgumentException('The bank account could not be found.'); }
+        $isDefault = ! empty($input['is_default']);
+        $values = [
+            'account_name'=>trim((string)$input['account_name']),
+            'bank_name'=>trim((string)$input['bank_name']),
+            'account_holder'=>trim((string)($input['account_holder'] ?? '')) ?: null,
+            'account_number'=>trim((string)($input['account_number'] ?? '')) ?: null,
+            'transit_number'=>trim((string)($input['transit_number'] ?? '')) ?: null,
+            'institution_number'=>trim((string)($input['institution_number'] ?? '')) ?: null,
+            'swift_code'=>trim((string)($input['swift_code'] ?? '')) ?: null,
+            'iban'=>trim((string)($input['iban'] ?? '')) ?: null,
+            'currency'=>strtoupper(trim((string)($input['currency'] ?? 'CAD'))) ?: 'CAD',
+            'payment_instructions'=>trim((string)($input['payment_instructions'] ?? '')) ?: null,
+            'is_default'=>$isDefault ? 1 : 0,
+            'active'=>! empty($input['active']) ? 1 : 0,
+            'updated_at'=>date('c'),
+        ];
+        if ($isDefault) { $this->db->execute('UPDATE bank_accounts SET is_default=0'); }
+        if ($existing) { $this->db->update('bank_accounts', $id, $values); }
+        else { $values['created_at']=date('c'); $id=$this->db->insert('bank_accounts', $values); }
+        $this->audit($existing ? 'updated' : 'created', 'bank_account', $id, $existing, $values);
+        return $id;
     }
 
     public function employees(): array
@@ -420,12 +612,18 @@ final class AgencyService
         $end = date('Y-m-t', strtotime($start));
         $events = [];
         $isAdmin = $this->isAdministrator();
+        $isClient = $this->isClientPortal();
+        $clientId = $this->currentClientId();
         $employeeId = $this->currentEmployeeId();
         $taskScope = '';
         $ownedScope = '';
         $taskParameters = [$start, $end];
         $ownedParameters = [$start, $end];
-        if (! $isAdmin) {
+        if ($isClient) {
+            if (! $clientId) { return []; }
+            $taskScope = ' AND t.client_id=?';
+            $taskParameters[] = $clientId;
+        } elseif (! $isAdmin) {
             if ($employeeId) {
                 $taskScope = ' AND (EXISTS (SELECT 1 FROM project_task_assignees pta_scope WHERE pta_scope.task_id=t.id AND pta_scope.employee_id=?) OR (NOT EXISTS (SELECT 1 FROM project_task_assignees pta_any WHERE pta_any.task_id=t.id) AND t.assigned_employee_id=?))';
                 array_push($taskParameters, $employeeId, $employeeId);
@@ -437,14 +635,39 @@ final class AgencyService
             }
         }
         foreach ($this->db->all("SELECT t.id,t.title,t.description,t.due_date AS event_date,t.occurrence_date,t.priority,t.status,t.created_at,t.completed_at,COALESCE((SELECT GROUP_CONCAT(pta.employee_id ORDER BY pta.employee_id SEPARATOR ',') FROM project_task_assignees pta WHERE pta.task_id=t.id),CAST(t.assigned_employee_id AS CHAR)) AS employee_ids,t.assigned_employee_id AS employee_id,COALESCE((SELECT GROUP_CONCAT(ea.name ORDER BY ea.name SEPARATOR ', ') FROM project_task_assignees pta JOIN employees ea ON ea.id=pta.employee_id WHERE pta.task_id=t.id),e.name) AS employee_name,t.client_id,t.project_id,p.name AS project_name,b.name AS client_name,'task' AS event_type FROM project_tasks t JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id JOIN projects p ON p.id=t.project_id LEFT JOIN employees e ON e.id=t.assigned_employee_id WHERE t.due_date BETWEEN ? AND ? AND t.status!='completed'{$taskScope}", $taskParameters) as $row) { $events[] = $row; }
-        foreach ($this->db->all("SELECT v.id,v.visit_type AS title,v.visit_date AS event_date,v.start_time,v.end_time,v.visit_type,v.status,v.purpose,v.equipment,v.content_captured,v.notes,v.is_additional,v.additional_charge,CAST(v.assigned_employee_id AS CHAR) AS employee_ids,v.assigned_employee_id AS employee_id,e.name AS employee_name,v.client_id,NULL AS project_id,NULL AS project_name,b.name AS client_name,p.name AS package_name,'visit' AS event_type FROM content_visits v JOIN clients c ON c.id=v.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=v.assigned_employee_id LEFT JOIN subscriptions s ON s.id=v.subscription_id LEFT JOIN packages p ON p.id=s.package_id WHERE v.visit_date BETWEEN ? AND ? AND v.status!='cancelled'".str_replace('assigned_employee_id', 'v.assigned_employee_id', $ownedScope), $ownedParameters) as $row) { $events[] = $row; }
-        foreach ($this->db->all("SELECT ci.id,ci.title,date(ci.scheduled_at) AS event_date,ci.scheduled_at AS event_datetime,ci.platform,ci.content_type,ci.caption,ci.hashtags,ci.status,ci.approval_status,ci.approval_comments,ci.created_at,CAST(ci.assigned_employee_id AS CHAR) AS employee_ids,ci.assigned_employee_id AS employee_id,e.name AS employee_name,ci.client_id,ci.project_id,p.name AS project_name,b.name AS client_name,'content' AS event_type FROM content_items ci JOIN clients c ON c.id=ci.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=ci.project_id LEFT JOIN employees e ON e.id=ci.assigned_employee_id WHERE date(ci.scheduled_at) BETWEEN ? AND ?".str_replace('assigned_employee_id', 'ci.assigned_employee_id', $ownedScope), $ownedParameters) as $row) { $events[] = $row; }
-        foreach ($this->db->all("SELECT p.id,CONCAT(p.name, ' deadline') AS title,p.deadline AS event_date,p.project_type,p.start_date,p.deadline,p.priority,p.status,p.notes AS description,p.manager_id AS employee_id,e.name AS employee_name,p.client_id,p.id AS project_id,p.name AS project_name,b.name AS client_name,'deadline' AS event_type FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=p.manager_id WHERE p.deadline BETWEEN ? AND ? AND p.status NOT IN ('completed','cancelled')", [$start,$end]) as $row) { $events[] = $row; }
+        if (! $isClient) {
+            foreach ($this->db->all("SELECT v.id,v.visit_type AS title,v.visit_date AS event_date,v.start_time,v.end_time,v.visit_type,v.status,v.purpose,v.equipment,v.content_captured,v.notes,v.is_additional,v.additional_charge,CAST(v.assigned_employee_id AS CHAR) AS employee_ids,v.assigned_employee_id AS employee_id,e.name AS employee_name,v.client_id,NULL AS project_id,NULL AS project_name,b.name AS client_name,p.name AS package_name,'visit' AS event_type FROM content_visits v JOIN clients c ON c.id=v.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=v.assigned_employee_id LEFT JOIN subscriptions s ON s.id=v.subscription_id LEFT JOIN packages p ON p.id=s.package_id WHERE v.visit_date BETWEEN ? AND ? AND v.status!='cancelled'".str_replace('assigned_employee_id', 'v.assigned_employee_id', $ownedScope), $ownedParameters) as $row) { $events[] = $row; }
+            foreach ($this->db->all("SELECT ci.id,ci.title,date(ci.scheduled_at) AS event_date,ci.scheduled_at AS event_datetime,ci.platform,ci.content_type,ci.caption,ci.hashtags,ci.status,ci.approval_status,ci.approval_comments,ci.created_at,CAST(ci.assigned_employee_id AS CHAR) AS employee_ids,ci.assigned_employee_id AS employee_id,e.name AS employee_name,ci.client_id,ci.project_id,p.name AS project_name,b.name AS client_name,'content' AS event_type FROM content_items ci JOIN clients c ON c.id=ci.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=ci.project_id LEFT JOIN employees e ON e.id=ci.assigned_employee_id WHERE date(ci.scheduled_at) BETWEEN ? AND ?".str_replace('assigned_employee_id', 'ci.assigned_employee_id', $ownedScope), $ownedParameters) as $row) { $events[] = $row; }
+        }
+        $deadlineScope = '';
+        $deadlineParameters = [$start, $end];
+        if ($isClient && $clientId) {
+            $deadlineScope = ' AND p.client_id=?';
+            $deadlineParameters[] = $clientId;
+        } elseif (! $isAdmin) {
+            if ($employeeId) {
+                $deadlineScope = ' AND EXISTS (SELECT 1 FROM project_tasks td WHERE td.project_id=p.id AND (EXISTS (SELECT 1 FROM project_task_assignees pta_deadline WHERE pta_deadline.task_id=td.id AND pta_deadline.employee_id=?) OR (NOT EXISTS (SELECT 1 FROM project_task_assignees pta_deadline_any WHERE pta_deadline_any.task_id=td.id) AND td.assigned_employee_id=?)))';
+                array_push($deadlineParameters, $employeeId, $employeeId);
+            } else {
+                $deadlineScope = ' AND 1=0';
+            }
+        }
+        foreach ($this->db->all("SELECT p.id,CONCAT(p.name, ' deadline') AS title,p.deadline AS event_date,p.project_type,p.start_date,p.deadline,p.priority,p.status,p.notes AS description,p.manager_id AS employee_id,e.name AS employee_name,p.client_id,p.id AS project_id,p.name AS project_name,b.name AS client_name,'deadline' AS event_type FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=p.manager_id WHERE p.deadline BETWEEN ? AND ? AND p.status NOT IN ('completed','cancelled'){$deadlineScope}", $deadlineParameters) as $row) { $events[] = $row; }
         if ($isAdmin) {
             foreach ($this->db->all("SELECT s.id,CONCAT(p.name, ' renewal') AS title,s.renewal_date AS event_date,s.monthly_price,s.start_date,s.renewal_date,s.contract_end_date,s.billing_frequency,s.deposit,s.discount_percent,s.tax_percent,s.status,NULL AS employee_ids,NULL AS employee_id,NULL AS employee_name,s.client_id,NULL AS project_id,NULL AS project_name,b.name AS client_name,p.name AS package_name,'renewal' AS event_type FROM subscriptions s JOIN clients c ON c.id=s.client_id JOIN businesses b ON b.id=c.business_id JOIN packages p ON p.id=s.package_id WHERE s.renewal_date BETWEEN ? AND ? AND s.status='active'", [$start,$end]) as $row) { $events[] = $row; }
         }
         usort($events, static fn(array $a, array $b): int => [$a['event_date'], $a['event_type'], $a['title']] <=> [$b['event_date'], $b['event_type'], $b['title']]);
         return $events;
+    }
+
+    public function calendarFilterOptions(): array
+    {
+        $clientId = $this->isClientPortal() ? $this->currentClientId() : null;
+        return [
+            'employees'=>$this->isAdministrator() ? $this->db->all("SELECT id,name FROM employees WHERE status='active' ORDER BY name") : [],
+            'clients'=>$clientId ? [] : $this->db->all("SELECT c.id,b.name FROM clients c JOIN businesses b ON b.id=c.business_id WHERE c.status='active' ORDER BY b.name"),
+            'projects'=>$this->db->all("SELECT p.id,p.name,p.client_id,b.name AS client_name FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id WHERE p.status NOT IN ('cancelled')".($clientId ? ' AND p.client_id=?' : '').' ORDER BY b.name,p.name', $clientId ? [$clientId] : []),
+        ];
     }
 
     public function auditLogs(): array
@@ -455,7 +678,7 @@ final class AgencyService
     public function rolesWithPermissions(): array
     {
         $roles=$this->db->all("SELECT * FROM roles WHERE slug!='super_admin' ORDER BY id");
-        foreach($roles as &$role){$role['protected']=$role['slug']==='admin';$role['permission_ids']=array_map('intval',array_column($this->db->all("SELECT rp.permission_id FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=? AND p.slug LIKE '%.access'",[$role['id']]),'permission_id'));}
+        foreach($roles as &$role){$role['protected']=in_array($role['slug'],['admin','client'],true);$role['permission_ids']=array_map('intval',array_column($this->db->all("SELECT rp.permission_id FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=? AND p.slug LIKE '%.access'",[$role['id']]),'permission_id'));}
         return $roles;
     }
 
@@ -494,8 +717,9 @@ final class AgencyService
             'stages' => $this->db->all('SELECT id, name FROM pipeline_stages ORDER BY position'),
             'opportunities' => $this->db->all("SELECT o.id, CONCAT(COALESCE(b.name,l.company_name,o.title), ' — ', ps.name) AS name, o.client_id, o.lead_id FROM opportunities o JOIN pipeline_stages ps ON ps.id=o.stage_id LEFT JOIN leads l ON l.id=o.lead_id LEFT JOIN clients c ON c.id=o.client_id LEFT JOIN businesses b ON b.id=c.business_id WHERE ps.is_closed=0 ORDER BY COALESCE(b.name,l.company_name,o.title)"),
             'projects' => $this->db->all("SELECT id, name, client_id FROM projects WHERE status NOT IN ('completed','cancelled') ORDER BY name"),
+            'invoice_projects' => $this->db->all("SELECT id,name,client_id,status FROM projects WHERE status!='cancelled' ORDER BY CASE WHEN status='completed' THEN 1 ELSE 0 END,name"),
             'subscriptions' => $this->db->all("SELECT s.id, s.client_id, CONCAT(b.name, ' — ', p.name) AS name FROM subscriptions s JOIN clients c ON c.id=s.client_id JOIN businesses b ON b.id=c.business_id JOIN packages p ON p.id=s.package_id WHERE s.status='active' ORDER BY b.name"),
-            'roles' => $this->db->all("SELECT id, name FROM roles WHERE slug!='super_admin' ORDER BY id"),
+            'roles' => $this->db->all("SELECT id, name FROM roles WHERE slug NOT IN ('super_admin','client') ORDER BY id"),
         ];
     }
 
@@ -711,6 +935,22 @@ final class AgencyService
         if (!$lead || $lead['converted_client_id']) {
             throw new InvalidArgumentException('This lead cannot be converted.');
         }
+        $email = mb_strtolower(trim((string)($lead['email'] ?? '')));
+        $existingClientId = $email === '' ? 0 : (int)($this->db->scalar("SELECT c.id FROM clients c LEFT JOIN users pu ON pu.id=c.portal_user_id WHERE c.status='active' AND (LOWER(COALESCE(c.email,''))=? OR LOWER(COALESCE(pu.email,''))=?) ORDER BY c.id LIMIT 1", [$email,$email]) ?: 0);
+        if ($existingClientId) {
+            return $this->db->transaction(function () use ($lead, $existingClientId): int {
+                $this->db->execute("UPDATE leads SET status='converted',converted_client_id=?,updated_at=? WHERE id=?", [$existingClientId,date('c'),$lead['id']]);
+                $wonStage = $this->db->first("SELECT id,win_probability FROM pipeline_stages WHERE slug='won'");
+                if ($wonStage) {
+                    $this->db->execute("UPDATE opportunities SET client_id=?,previous_stage_id=stage_id,stage_id=?,probability=?,stage_entered_at=?,closed_at=?,lost_reason=NULL,next_action='Begin client onboarding',updated_at=? WHERE lead_id=?", [$existingClientId,(int)$wonStage['id'],(int)$wonStage['win_probability'],date('c'),date('c'),date('c'),$lead['id']]);
+                } else {
+                    $this->db->execute('UPDATE opportunities SET client_id=?,updated_at=? WHERE lead_id=?', [$existingClientId,date('c'),$lead['id']]);
+                }
+                $this->activity($existingClientId,'lead.matched_existing','New engagement linked to the existing client account by email.','lead',(int)$lead['id']);
+                $this->audit('linked_existing_client','lead',(int)$lead['id'],$lead,['client_id'=>$existingClientId]);
+                return $existingClientId;
+            });
+        }
         return $this->db->transaction(function () use ($lead): int {
             $employeeCount = $this->nullableInt($lead['employee_count'] ?? null);
             $sizeId = $employeeCount
@@ -851,8 +1091,132 @@ final class AgencyService
         return $id;
     }
 
+    public function saveClientPortalAccess(array $input): int
+    {
+        if (! $this->isAdministrator()) { throw new InvalidArgumentException('Only an Administrator can manage client portal access.'); }
+        $this->required($input, ['client_id','name','email','status']);
+        $clientId = (int)$input['client_id'];
+        $client = $this->db->first('SELECT id,portal_user_id FROM clients WHERE id=?', [$clientId]);
+        if (! $client) { throw new InvalidArgumentException('The client could not be found.'); }
+
+        $email = mb_strtolower(trim((string)$input['email']));
+        if (! filter_var($email, FILTER_VALIDATE_EMAIL)) { throw new InvalidArgumentException('Enter a valid client login email.'); }
+        $status = (string)$input['status'];
+        if (! in_array($status, ['active','inactive'], true)) { throw new InvalidArgumentException('Select a valid portal status.'); }
+        $password = (string)($input['password'] ?? '');
+        if ($password !== '' && strlen($password) < 10) {
+            throw new InvalidArgumentException('Replacement passwords must be at least 10 characters.');
+        }
+        $roleId = (int)$this->db->scalar("SELECT id FROM roles WHERE slug='client'");
+        if (! $roleId) { throw new InvalidArgumentException('The client portal role is not available. Run the latest database migration.'); }
+
+        $userId = (int)($client['portal_user_id'] ?? 0);
+        $duplicateUser = $this->db->first('SELECT u.id,r.slug AS role_slug FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=? AND u.id!=?', [$email,$userId]);
+        if ($duplicateUser) {
+            if ($duplicateUser['role_slug'] !== 'client') {
+                throw new InvalidArgumentException('That email is already used by an internal system login.');
+            }
+            $linkedClientId = (int)($this->db->scalar('SELECT id FROM clients WHERE portal_user_id=? LIMIT 1', [(int)$duplicateUser['id']]) ?? 0);
+            if ($linkedClientId && $linkedClientId !== $clientId) {
+                throw new InvalidArgumentException('That email already belongs to another client profile. Open the existing client instead of creating a second login.');
+            }
+            $userId = (int)$duplicateUser['id'];
+        }
+        if (($userId === 0 || empty($client['portal_user_id'])) && $password === '') { $password = $this->generateTemporaryPassword(); }
+
+        return $this->db->transaction(function () use ($client, $clientId, $roleId, $email, $status, $password, $input, $userId): int {
+            $changes = [
+                'role_id'=>$roleId,
+                'name'=>trim((string)$input['name']),
+                'email'=>$email,
+                'status'=>$status,
+                'updated_at'=>date('c'),
+            ];
+            if ($password !== '') { $changes['password_hash'] = password_hash($password, PASSWORD_DEFAULT); }
+
+            if ($userId) {
+                $before = $this->db->first('SELECT id,name,email,status FROM users WHERE id=?', [$userId]);
+                $this->db->update('users', $userId, $changes);
+                $this->audit('portal_access_updated', 'client', $clientId, $before, array_diff_key($changes, ['password_hash'=>true]));
+            } else {
+                $changes['created_at'] = date('c');
+                $userId = $this->db->insert('users', $changes);
+                $this->audit('portal_access_created', 'client', $clientId, null, ['user_id'=>$userId,'email'=>$email,'status'=>$status]);
+            }
+            $clientChanges = ['portal_user_id'=>$userId];
+            if ($password !== '') {
+                $clientChanges['portal_password_encrypted'] = Crypt::encryptString($password);
+                $clientChanges['portal_password_reset_at'] = date('c');
+                $clientChanges['portal_password_changed_at'] = null;
+            }
+            $this->db->update('clients', $clientId, $clientChanges);
+            return $userId;
+        });
+    }
+
+    public function ensureClientPortalAccess(int $clientId): int
+    {
+        if (! $this->isAdministrator()) { throw new InvalidArgumentException('Only an Administrator can create client portal access.'); }
+        $client = $this->db->first('SELECT c.id,c.name,c.email,c.portal_user_id FROM clients c WHERE c.id=?', [$clientId]);
+        if (! $client) { throw new InvalidArgumentException('The client could not be found.'); }
+        if (! filter_var((string)$client['email'], FILTER_VALIDATE_EMAIL)) {
+            throw new InvalidArgumentException('Add a valid client email before creating portal credentials.');
+        }
+        return $this->saveClientPortalAccess([
+            'client_id'=>$clientId,
+            'name'=>(string)$client['name'],
+            'email'=>(string)$client['email'],
+            'status'=>'active',
+            'password'=>'',
+        ]);
+    }
+
+    public function resetClientPortalPassword(array $input): void
+    {
+        if (! $this->isAdministrator()) { throw new InvalidArgumentException('Only an Administrator can reset client passwords.'); }
+        $clientId = (int)($input['client_id'] ?? 0);
+        $client = $this->db->first('SELECT id,portal_user_id FROM clients WHERE id=?', [$clientId]);
+        if (! $client || empty($client['portal_user_id'])) { throw new InvalidArgumentException('Create the client portal login before resetting its password.'); }
+        $password = (string)($input['password'] ?? '');
+        if ($password === '') { $password = $this->generateTemporaryPassword(); }
+        if (strlen($password) < 10) { throw new InvalidArgumentException('Temporary passwords must be at least 10 characters.'); }
+
+        $this->db->transaction(function () use ($clientId, $client, $password): void {
+            $this->db->update('users', (int)$client['portal_user_id'], [
+                'password_hash'=>password_hash($password, PASSWORD_DEFAULT),
+                'status'=>'active',
+                'updated_at'=>date('c'),
+            ]);
+            $this->db->update('clients', $clientId, [
+                'portal_password_encrypted'=>Crypt::encryptString($password),
+                'portal_password_reset_at'=>date('c'),
+                'portal_password_changed_at'=>null,
+            ]);
+            $this->audit('portal_password_reset', 'client', $clientId, null, ['portal_user_id'=>(int)$client['portal_user_id']]);
+        });
+    }
+
+    public function changeOwnPassword(array $input): void
+    {
+        $user = $this->db->first('SELECT id,password_hash FROM users WHERE id=?', [(int)($this->auth->user()['id'] ?? 0)]);
+        if (! $user || ! password_verify((string)($input['current_password'] ?? ''), (string)$user['password_hash'])) {
+            throw new InvalidArgumentException('The current password is incorrect.');
+        }
+        $password = (string)($input['new_password'] ?? '');
+        if (strlen($password) < 10) { throw new InvalidArgumentException('Your new password must be at least 10 characters.'); }
+        if ($password !== (string)($input['new_password_confirmation'] ?? '')) { throw new InvalidArgumentException('The new password confirmation does not match.'); }
+        if (password_verify($password, (string)$user['password_hash'])) { throw new InvalidArgumentException('Choose a new password that is different from your current password.'); }
+
+        $this->db->transaction(function () use ($user, $password): void {
+            $this->db->update('users', (int)$user['id'], ['password_hash'=>password_hash($password, PASSWORD_DEFAULT),'updated_at'=>date('c')]);
+            $this->db->execute('UPDATE clients SET portal_password_encrypted=NULL,portal_password_changed_at=? WHERE portal_user_id=?', [date('c'),(int)$user['id']]);
+            $this->audit('password_changed', 'user', (int)$user['id'], null, ['changed_at'=>date('c')]);
+        });
+    }
+
     public function createTask(array $input): int
     {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal users cannot create delivery tasks.'); }
         $this->required($input, ['project_id','title']);
         $project = $this->db->first('SELECT client_id FROM projects WHERE id=?', [(int)$input['project_id']]);
         if (!$project) {
@@ -871,6 +1235,7 @@ final class AgencyService
 
     public function duplicateTask(int $taskId): int
     {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal users cannot duplicate delivery tasks.'); }
         $source = $this->db->first('SELECT * FROM project_tasks WHERE id=?', [$taskId]);
         if (! $source) { throw new InvalidArgumentException('The task could not be found.'); }
         $this->assertTaskVisible($taskId);
@@ -893,15 +1258,112 @@ final class AgencyService
         return $copyId;
     }
 
-    public function addTaskNote(int $taskId, string $note): void
+    public function addTaskNote(int $taskId, string $note, bool $clientVisible = false): void
     {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal access is read-only.'); }
         $note = trim($note);
         if ($note === '') { throw new InvalidArgumentException('Write a note before saving.'); }
         $task = $this->db->first('SELECT id,client_id,title FROM project_tasks WHERE id=?', [$taskId]);
         if (! $task) { throw new InvalidArgumentException('The task could not be found.'); }
         $this->assertTaskVisible($taskId);
-        $this->audit('note_added', 'task', $taskId, null, ['note'=>$note]);
+        $visibility = $clientVisible ? 'client' : 'internal';
+        $this->db->insert('task_updates', [
+            'task_id'=>$taskId,
+            'user_id'=>(int)$this->auth->user()['id'],
+            'visibility'=>$visibility,
+            'body'=>$note,
+            'created_at'=>date('c'),
+        ]);
+        $this->audit('note_added', 'task', $taskId, null, ['note'=>$note,'visibility'=>$visibility]);
         $this->activity((int)$task['client_id'], 'task.note_added', 'Note added to task: '.$task['title'], 'task', $taskId);
+    }
+
+    public function uploadTaskFile(int $taskId, ?UploadedFile $file, bool $clientVisible = true): int
+    {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal access is read-only.'); }
+        $task = $this->db->first('SELECT id,client_id,title FROM project_tasks WHERE id=?', [$taskId]);
+        if (! $task) { throw new InvalidArgumentException('The task could not be found.'); }
+        $this->assertTaskVisible($taskId);
+        if (! $file || ! $file->isValid()) { throw new InvalidArgumentException('Choose a valid file to upload.'); }
+        $fileSize = (int)$file->getSize();
+        if ($fileSize > 100 * 1024 * 1024) { throw new InvalidArgumentException('Task files cannot be larger than 100 MB.'); }
+
+        $originalName = basename($file->getClientOriginalName());
+        $extension = strtolower((string)$file->getClientOriginalExtension());
+        $allowedExtensions = ['jpg','jpeg','png','gif','webp','svg','pdf','txt','csv','doc','docx','xls','xlsx','ppt','pptx','zip','mp4','mov','avi','mkv','webm','mp3','wav','m4a'];
+        if (! in_array($extension, $allowedExtensions, true)) {
+            throw new InvalidArgumentException('This file type is not allowed. Upload an image, video, audio, document, spreadsheet, presentation, PDF, text, CSV, or ZIP file.');
+        }
+        $mime = (string)($file->getMimeType() ?: $file->getClientMimeType() ?: 'application/octet-stream');
+        if (preg_match('/(x-dosexec|x-msdownload|x-executable|x-sharedlib)/i', $mime)) {
+            throw new InvalidArgumentException('Executable files are not allowed.');
+        }
+
+        $relativeDirectory = 'client-'.$task['client_id'].DIRECTORY_SEPARATOR.'task-'.$taskId.DIRECTORY_SEPARATOR.date('Y').DIRECTORY_SEPARATOR.date('m');
+        $base = storage_path('app/private/task-files');
+        $directory = $base.DIRECTORY_SEPARATOR.$relativeDirectory;
+        if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
+            throw new InvalidArgumentException('The task file folder could not be prepared.');
+        }
+        $storedName = bin2hex(random_bytes(18)).'.'.$extension;
+        $file->move($directory, $storedName);
+        $storagePath = $relativeDirectory.DIRECTORY_SEPARATOR.$storedName;
+        $visibility = $clientVisible ? 'client' : 'internal';
+        $id = $this->db->insert('task_files', [
+            'task_id'=>$taskId,
+            'user_id'=>(int)$this->auth->user()['id'],
+            'visibility'=>$visibility,
+            'original_name'=>$originalName,
+            'stored_name'=>$storedName,
+            'storage_path'=>$storagePath,
+            'mime_type'=>$mime,
+            'file_size'=>$fileSize,
+            'created_at'=>date('c'),
+        ]);
+        $this->audit('file_uploaded', 'task', $taskId, null, ['file_id'=>$id,'name'=>$originalName,'visibility'=>$visibility,'size'=>$fileSize]);
+        $this->activity((int)$task['client_id'], 'task.file_uploaded', 'File uploaded to task: '.$task['title'], 'task', $taskId);
+        return $id;
+    }
+
+    public function uploadTaskFiles(int $taskId, array $files, bool $clientVisible = true): int
+    {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal access is read-only.'); }
+        $files = array_values(array_filter($files, static fn($file): bool => $file instanceof UploadedFile));
+        if (! $files) { throw new InvalidArgumentException('Choose at least one valid file to upload.'); }
+        if (count($files) > 20) { throw new InvalidArgumentException('Upload no more than 20 files at a time.'); }
+        foreach ($files as $file) { $this->uploadTaskFile($taskId, $file, $clientVisible); }
+        return count($files);
+    }
+
+    public function updateTaskFileVisibility(int $fileId, bool $clientVisible): void
+    {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal access is read-only.'); }
+        $file = $this->db->first('SELECT * FROM task_files WHERE id=?', [$fileId]);
+        if (! $file) { throw new InvalidArgumentException('The task file could not be found.'); }
+        $this->assertTaskVisible((int)$file['task_id']);
+        $visibility = $clientVisible ? 'client' : 'internal';
+        $this->db->update('task_files', $fileId, ['visibility'=>$visibility]);
+        $this->audit('file_visibility_changed', 'task', (int)$file['task_id'], ['file_id'=>$fileId,'visibility'=>$file['visibility']], ['file_id'=>$fileId,'visibility'=>$visibility]);
+    }
+
+    public function updateTaskNoteVisibility(int $updateId, bool $clientVisible): void
+    {
+        if ($this->isClientPortal()) { throw new InvalidArgumentException('Client portal access is read-only.'); }
+        $update = $this->db->first('SELECT * FROM task_updates WHERE id=?', [$updateId]);
+        if (! $update) { throw new InvalidArgumentException('The task update could not be found.'); }
+        $this->assertTaskVisible((int)$update['task_id']);
+        $visibility = $clientVisible ? 'client' : 'internal';
+        $this->db->update('task_updates', $updateId, ['visibility'=>$visibility]);
+        $this->audit('note_visibility_changed', 'task', (int)$update['task_id'], ['update_id'=>$updateId,'visibility'=>$update['visibility']], ['update_id'=>$updateId,'visibility'=>$visibility]);
+    }
+
+    public function taskFileForDownload(int $fileId): ?array
+    {
+        $file = $this->db->first('SELECT tf.*,t.client_id,t.title AS task_title FROM task_files tf JOIN project_tasks t ON t.id=tf.task_id WHERE tf.id=?', [$fileId]);
+        if (! $file) { return null; }
+        $this->assertTaskVisible((int)$file['task_id']);
+        if ($this->isClientPortal() && $file['visibility'] !== 'client') { return null; }
+        return $file;
     }
 
     public function deleteTask(int $taskId): void
@@ -943,6 +1405,7 @@ final class AgencyService
             $new = json_decode((string)($row['new_values'] ?? ''), true) ?: [];
             $row['summary'] = match ($row['action']) {
                 'note_added' => (string)($new['note'] ?? 'Note added.'),
+                'file_uploaded' => 'File uploaded: '.(string)($new['name'] ?? 'Task file').'.',
                 'status_changed' => 'Status changed from '.ucwords(str_replace('_',' ',(string)($old['status'] ?? 'unknown'))).' to '.ucwords(str_replace('_',' ',(string)($new['status'] ?? 'unknown'))).'.',
                 'duplicated' => 'Task duplicated as task #'.(int)($new['new_task_id'] ?? 0).'.',
                 'duplicated_from' => 'Created as a duplicate of task #'.(int)($new['source_task_id'] ?? 0).'.',
@@ -1028,21 +1491,46 @@ final class AgencyService
 
     public function createInvoice(array $input): int
     {
-        $this->required($input, ['client_id','description','amount','due_date']);
-        $amount = $this->nonNegative($input['amount']);
-        if ($amount <= 0) {
-            throw new InvalidArgumentException('Invoice amount must be greater than zero.');
+        $this->required($input, ['client_id','due_date']);
+        $clientId = (int)$input['client_id'];
+        if (! $this->db->first('SELECT id FROM clients WHERE id=?', [$clientId])) { throw new InvalidArgumentException('Select a valid client.'); }
+        $projectId = $this->nullableInt($input['project_id'] ?? null);
+        if ($projectId && ! $this->db->first('SELECT id FROM projects WHERE id=? AND client_id=?', [$projectId,$clientId])) { throw new InvalidArgumentException('The selected project does not belong to this client.'); }
+        $bankId = $this->nullableInt($input['bank_account_id'] ?? null);
+        if ($bankId && ! $this->db->first('SELECT id FROM bank_accounts WHERE id=? AND active=1', [$bankId])) { throw new InvalidArgumentException('Select an active bank account.'); }
+        $descriptions = is_array($input['item_description'] ?? null) ? $input['item_description'] : [($input['description'] ?? '')];
+        $quantities = is_array($input['item_quantity'] ?? null) ? $input['item_quantity'] : [1];
+        $prices = is_array($input['item_unit_price'] ?? null) ? $input['item_unit_price'] : [($input['amount'] ?? 0)];
+        $items = [];
+        foreach ($descriptions as $index=>$description) {
+            $description = trim((string)$description);
+            if ($description === '') { continue; }
+            $quantity = max(0.01, (float)($quantities[$index] ?? 1));
+            $unitPrice = $this->nonNegative($prices[$index] ?? 0);
+            if ($unitPrice <= 0) { throw new InvalidArgumentException('Every invoice line needs a price greater than zero.'); }
+            $items[] = ['description'=>$description,'quantity'=>$quantity,'unit_price'=>$unitPrice,'total'=>$quantity*$unitPrice];
         }
-        return $this->db->transaction(function () use ($input, $amount): int {
-            $number = 'INV-' . date('Y') . '-' . str_pad((string)((int)$this->db->scalar('SELECT COUNT(*) FROM invoices') + 1001), 4, '0', STR_PAD_LEFT);
-            $taxPercent = $this->nonNegative($input['tax_percent'] ?? 0);
-            $discount = $this->nonNegative($input['discount'] ?? 0);
-            $tax = max(0, ($amount-$discount)*$taxPercent/100);
-            $total = $amount-$discount+$tax;
-            $id = $this->db->insert('invoices', ['invoice_number'=>$number,'client_id'=>(int)$input['client_id'],'project_id'=>$this->nullableInt($input['project_id'] ?? null),'package_id'=>$this->nullableInt($input['package_id'] ?? null),'issue_date'=>date('Y-m-d'),'due_date'=>$input['due_date'],'subtotal'=>$amount,'discount'=>$discount,'tax'=>$tax,'total'=>$total,'amount_paid'=>0,'status'=>'sent','notes'=>trim($input['notes'] ?? ''),'created_at'=>date('c')]);
-            $this->db->insert('invoice_items', ['invoice_id'=>$id,'description'=>trim($input['description']),'quantity'=>1,'unit_price'=>$amount,'total'=>$amount]);
-            $this->activity((int)$input['client_id'],'invoice.sent','Invoice '.$number.' sent for '.money($total).'.','invoice',$id);
-            $this->audit('created','invoice',$id,null,$input);
+        if (! $items) { throw new InvalidArgumentException('Add at least one invoice line item.'); }
+        $subtotal = array_sum(array_column($items, 'total'));
+        $discount = min($subtotal, $this->nonNegative($input['discount'] ?? 0));
+        $taxPercent = $this->nonNegative($input['tax_percent'] ?? 0);
+        $tax = max(0, ($subtotal-$discount)*$taxPercent/100);
+        $total = $subtotal-$discount+$tax;
+        $status = in_array(($input['status'] ?? 'sent'), ['draft','sent'], true) ? (string)$input['status'] : 'sent';
+        return $this->db->transaction(function () use ($input, $items, $clientId, $projectId, $bankId, $subtotal, $discount, $tax, $total, $status): int {
+            $sequence = (int)$this->db->scalar('SELECT COALESCE(MAX(id),0)+1001 FROM invoices');
+            $number = 'INV-' . date('Y') . '-' . str_pad((string)$sequence, 4, '0', STR_PAD_LEFT);
+            $profile = $this->invoiceProfile();
+            $id = $this->db->insert('invoices', [
+                'invoice_number'=>$number,'client_id'=>$clientId,'project_id'=>$projectId,'package_id'=>$this->nullableInt($input['package_id'] ?? null),'bank_account_id'=>$bankId,
+                'currency'=>strtoupper(trim((string)($input['currency'] ?? 'CAD'))) ?: 'CAD','purchase_order_number'=>trim((string)($input['purchase_order_number'] ?? '')) ?: null,
+                'milestone_title'=>trim((string)($input['milestone_title'] ?? '')) ?: null,'milestone_description'=>trim((string)($input['milestone_description'] ?? '')) ?: null,
+                'payment_terms'=>trim((string)($input['payment_terms'] ?? ($profile['default_payment_terms'] ?? ''))) ?: null,
+                'issue_date'=>date('Y-m-d'),'due_date'=>(string)$input['due_date'],'subtotal'=>$subtotal,'discount'=>$discount,'tax'=>$tax,'total'=>$total,'amount_paid'=>0,'status'=>$status,'notes'=>trim((string)($input['notes'] ?? '')) ?: null,'created_at'=>date('c'),
+            ]);
+            foreach ($items as $item) { $this->db->insert('invoice_items', ['invoice_id'=>$id]+$item); }
+            $this->activity($clientId,'invoice.'.$status,'Invoice '.$number.' '.($status==='draft'?'drafted':'sent').' for '.money($total).'.','invoice',$id);
+            $this->audit('created','invoice',$id,null,['invoice_number'=>$number,'total'=>$total,'status'=>$status,'item_count'=>count($items)]);
             return $id;
         });
     }
@@ -1132,7 +1620,7 @@ final class AgencyService
 
     public function updateRolePermissions(int $roleId, array $permissionIds): void
     {
-        $role=$this->db->first("SELECT * FROM roles WHERE id=? AND slug NOT IN ('super_admin','admin')",[$roleId]);
+        $role=$this->db->first("SELECT * FROM roles WHERE id=? AND slug NOT IN ('super_admin','admin','client')",[$roleId]);
         if(!$role){throw new InvalidArgumentException('That role cannot be modified.');}
         $valid=array_map('intval',array_column($this->permissions(),'id'));
         $permissionIds=array_values(array_unique(array_intersect($valid,array_map('intval',$permissionIds))));
@@ -1148,7 +1636,7 @@ final class AgencyService
     {
         $this->required($input, ['role_id', 'name', 'slug']);
         $roleId = (int) $input['role_id'];
-        $role = $this->db->first("SELECT * FROM roles WHERE id=? AND slug NOT IN ('super_admin','admin')", [$roleId]);
+        $role = $this->db->first("SELECT * FROM roles WHERE id=? AND slug NOT IN ('super_admin','admin','client')", [$roleId]);
         if (! $role) {
             throw new InvalidArgumentException('That role cannot be modified.');
         }
@@ -1360,15 +1848,18 @@ final class AgencyService
         if (!isset($allowed[$entity]) || !in_array($status,$allowed[$entity]['statuses'],true)) {
             throw new InvalidArgumentException('Invalid status change.');
         }
+        if ($entity === 'task' && $this->isClientPortal()) {
+            throw new InvalidArgumentException('Clients can follow task progress but cannot change delivery status.');
+        }
         $table = $allowed[$entity]['table'];
         $before = $this->db->first('SELECT * FROM `'.$table.'` WHERE id=?', [$id]);
         if (!$before) {
             throw new InvalidArgumentException('Record not found.');
         }
         if ($entity === 'task') { $this->assertTaskVisible($id); }
-        $extra = $entity==='task' && $status==='completed' ? ', completed_at = ?' : '';
+        $extra = $entity==='task' ? ', completed_at = ?' : '';
         $params = [$status];
-        if ($extra) { $params[] = date('c'); }
+        if ($entity === 'task') { $params[] = $status === 'completed' ? ($before['completed_at'] ?: date('c')) : null; }
         $params[] = $id;
         $this->db->execute('UPDATE `'.$table.'` SET status=?'.$extra.' WHERE id=?', $params);
         $this->audit('status_changed',$entity,$id,$before,['status'=>$status]);
@@ -1627,18 +2118,70 @@ final class AgencyService
         return in_array((string)($this->auth->user()['role_slug'] ?? ''), ['super_admin', 'admin'], true);
     }
 
+    public function isClientPortalView(): bool
+    {
+        return $this->isClientPortal();
+    }
+
+    private function isClientPortal(): bool
+    {
+        return (string)($this->auth->user()['role_slug'] ?? '') === 'client';
+    }
+
+    private function currentClientId(): ?int
+    {
+        return $this->nullableInt($this->auth->user()['client_id'] ?? null);
+    }
+
     private function currentEmployeeId(): ?int
     {
         return $this->nullableInt($this->auth->user()['employee_id'] ?? null);
     }
 
+    private function generateTemporaryPassword(): string
+    {
+        return 'Ca1!'.bin2hex(random_bytes(6));
+    }
+
     private function assertTaskVisible(int $taskId): void
     {
         if ($this->isAdministrator()) { return; }
+        if ($this->isClientPortal()) {
+            $clientId = $this->currentClientId();
+            if (! $clientId || ! (int)$this->db->scalar('SELECT COUNT(*) FROM project_tasks WHERE id=? AND client_id=?', [$taskId,$clientId])) {
+                throw new InvalidArgumentException('You can only open tasks belonging to your client account.');
+            }
+            return;
+        }
         $employeeId = $this->currentEmployeeId();
         if (! $employeeId) { throw new InvalidArgumentException('Your login is not linked to a team member, so no tasks can be assigned to it.'); }
         $visible = (int)$this->db->scalar('SELECT COUNT(*) FROM project_tasks t WHERE t.id=? AND (EXISTS (SELECT 1 FROM project_task_assignees pta WHERE pta.task_id=t.id AND pta.employee_id=?) OR (NOT EXISTS (SELECT 1 FROM project_task_assignees pta_any WHERE pta_any.task_id=t.id) AND t.assigned_employee_id=?))', [$taskId, $employeeId, $employeeId]);
         if (! $visible) { throw new InvalidArgumentException('You can only update tasks assigned to you.'); }
+    }
+
+    private function taskUpdates(int $taskId, bool $clientOnly = false): array
+    {
+        $where = $clientOnly ? " AND tu.visibility='client'" : '';
+        $updates = $this->db->all("SELECT tu.*,u.name AS author_name,r.slug AS author_role FROM task_updates tu LEFT JOIN users u ON u.id=tu.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE tu.task_id=?{$where} ORDER BY tu.id DESC", [$taskId]);
+        foreach ($updates as &$update) {
+            $update['author_label'] = $clientOnly || $this->isClientPortal()
+                ? $this->portalAuthorLabel($update)
+                : ($update['author_name'] ?: 'System');
+        }
+        unset($update);
+        return $updates;
+    }
+
+    private function taskFiles(int $taskId, bool $clientOnly = false): array
+    {
+        $where = $clientOnly ? " AND tf.visibility='client'" : '';
+        return $this->db->all("SELECT tf.id,tf.task_id,tf.visibility,tf.original_name,tf.mime_type,tf.file_size,tf.created_at,u.name AS uploaded_by,r.slug AS uploader_role FROM task_files tf LEFT JOIN users u ON u.id=tf.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE tf.task_id=?{$where} ORDER BY tf.id DESC", [$taskId]);
+    }
+
+    private function portalAuthorLabel(array $update): string
+    {
+        if ((int)($update['user_id'] ?? 0) === (int)($this->auth->user()['id'] ?? 0)) { return 'You'; }
+        return ($update['author_role'] ?? '') === 'client' ? 'Client' : '360 Creative Agency';
     }
 
     private function validatedAssigneeIds(array $input, bool $includeCurrentUser = false): array

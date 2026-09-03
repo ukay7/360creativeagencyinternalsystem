@@ -8,6 +8,8 @@ use App\Services\AgencyService;
 use App\Services\Auth;
 use App\Services\Database;
 use App\Services\QuoteStudioService;
+use Dompdf\Dompdf;
+use Dompdf\Options;
 use Illuminate\Http\Request;
 use InvalidArgumentException;
 use Throwable;
@@ -33,19 +35,41 @@ final class AgencyController extends Controller
         $permissionMap = [
             'dashboard'=>'dashboard.access','leads'=>'leads.access','lead'=>'leads.access','pipeline'=>'pipeline.access','discovery'=>'discovery.access','clients'=>'clients.access','client'=>'clients.access','contracts'=>'contracts.access',
             'packages'=>'packages.access','services'=>'services.access','proposals'=>'proposals.access','projects'=>'projects.access','tasks'=>'tasks.access',
-            'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','calendar'=>'calendar.access','invoices'=>'invoices.access','team'=>'team.access','time'=>'time.access',
-            'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access',
+            'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','task_file'=>'tasks.access','task_file_view'=>'tasks.access','calendar'=>'calendar.access','invoices'=>'invoices.access','invoice'=>'invoices.access','invoice_pdf'=>'invoices.access','team'=>'team.access','time'=>'time.access',
+            'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access','change_password'=>null,
             'quote_studio'=>'proposals.access','saved_quotes'=>'proposals.access','quote_view'=>'proposals.access','quote_settings'=>'settings.access',
         ];
 
-        if (! isset($permissionMap[$route])) {
+        if (! array_key_exists($route, $permissionMap)) {
             return $this->laravelPage('error', ['title'=>'Page not found','message'=>'The requested workspace area does not exist.'], $route, 404);
         }
-        if (! $this->auth->can($permissionMap[$route])) {
+        if ($permissionMap[$route] !== null && ! $this->auth->can($permissionMap[$route])) {
             return $this->laravelPage('error', ['title'=>'Access denied','message'=>'Your role does not have permission to open this area.'], $route, 403);
         }
         if ($route === 'media_download') {
             return $this->laravelDownloadMedia((int) ($request->query('id') ?? $request->route('extra', 0)));
+        }
+        if ($route === 'task_file') {
+            return $this->laravelDownloadTaskFile((int) ($request->query('id') ?? $request->route('extra', 0)));
+        }
+        if ($route === 'task_file_view') {
+            return $this->laravelViewTaskFile((int) ($request->query('id') ?? $request->route('extra', 0)));
+        }
+        if ($route === 'invoice_pdf') {
+            return $this->laravelInvoicePdf((int) ($request->query('id') ?? $request->route('extra', 0)));
+        }
+
+        if (($this->auth->user()['role_slug'] ?? '') === 'client' && in_array($route, ['dashboard','projects','tasks'], true)) {
+            try {
+                return $this->laravelPage('client-portal', [
+                    'title'=>$route === 'dashboard' ? 'Client Portal' : ($route === 'projects' ? 'My Projects' : 'My Tasks'),
+                    'portal'=>$this->agency->clientPortalData($request->query()),
+                    'section'=>$route,
+                    'filters'=>$request->query(),
+                ], $route);
+            } catch (Throwable $exception) {
+                return $this->laravelPage('error', ['title'=>'Portal unavailable','message'=>$exception->getMessage()], $route, 403);
+            }
         }
 
         $options = $this->agency->options();
@@ -71,11 +95,14 @@ final class AgencyController extends Controller
             'content' => $this->laravelPage('entity-list', array_merge($this->contentPage($options), ['rows'=>$this->agency->content()]), $route),
             'media' => $this->laravelPage('media', ['title'=>'Media Library','rows'=>$this->agency->media(),'options'=>$options], $route),
             'calendar' => $this->calendarPage($request, $options, $route),
-            'invoices' => $this->laravelPage('entity-list', array_merge($this->invoicePage($options), ['rows'=>$this->agency->invoices()]), $route),
+            'invoices' => $this->laravelPage('invoices', ['title'=>'Invoices & Payments','rows'=>$this->agency->invoices($request->query()),'filters'=>$request->query(),'options'=>$options,'bankAccounts'=>$this->agency->bankAccounts(true)], $route),
+            'invoice' => ($invoice=$this->agency->invoice((int)($request->query('id') ?? $request->route('extra',0))))
+                ? $this->laravelPage('invoice', ['title'=>$invoice['invoice_number'],'invoice'=>$invoice], $route)
+                : $this->laravelPage('error',['title'=>'Invoice not found','message'=>'The requested invoice does not exist.'],$route,404),
             'team' => $this->laravelPage('entity-list', array_merge($this->teamPage($options), ['rows'=>$this->agency->employees()]), $route),
             'time' => $this->laravelPage('entity-list', array_merge($this->timePage($options), ['rows'=>$this->agency->timeEntries()]), $route),
             'reports' => $this->laravelPage('reports', ['title'=>'Agency Reports','reports'=>$this->agency->reports()], $route),
-            'settings' => $this->laravelPage('settings', ['title'=>'Settings','options'=>$options,'services'=>$this->agency->services(),'stages'=>$this->agency->pipeline(),'roles'=>$this->agency->rolesWithPermissions(),'permissions'=>$this->agency->permissions(),'systemUsers'=>$this->agency->systemUsersWithAccess(),'navigationItems'=>$this->agency->navigationConfiguration()], $route),
+            'settings' => $this->laravelPage('settings', ['title'=>'Settings','options'=>$options,'services'=>$this->agency->services(),'stages'=>$this->agency->pipeline(),'roles'=>$this->agency->rolesWithPermissions(),'permissions'=>$this->agency->permissions(),'systemUsers'=>$this->agency->systemUsersWithAccess(),'navigationItems'=>$this->agency->navigationConfiguration(),'invoiceProfile'=>$this->agency->invoiceProfile(),'bankAccounts'=>$this->agency->bankAccounts()], $route),
             'audit' => $this->laravelPage('audit', ['title'=>'Audit Log','rows'=>$this->agency->auditLogs()], $route),
             'search' => $this->laravelPage('search', ['title'=>'Search','query'=>trim((string) $request->query('q', '')),'results'=>$this->agency->search(trim((string) $request->query('q', '')))], $route),
             'quote_studio' => $this->laravelPage('quote-studio', ['title'=>'New Quote','quoteData'=>$this->quotes->builderData((int)$request->query('id',0))], $route),
@@ -84,6 +111,7 @@ final class AgencyController extends Controller
                 ? $this->laravelPage('quote-view', ['title'=>$quote['proposal_number'],'quote'=>$quote,'company'=>config('quote_studio.company'),'locales'=>config('quote_studio.locales')], $route)
                 : $this->laravelPage('error',['title'=>'Quote not found','message'=>'The requested quote does not exist.'],$route,404),
             'quote_settings' => $this->laravelPage('quote-settings', ['title'=>'Quote Settings','quoteSettings'=>$this->quotes->settingsData()], $route),
+            'change_password' => $this->laravelPage('change-password', ['title'=>'Change Password'], $route),
         };
     }
 
@@ -123,6 +151,13 @@ final class AgencyController extends Controller
                 $legacyFile = $file ? ['error'=>UPLOAD_ERR_OK,'tmp_name'=>$file->getPathname(),'size'=>$file->getSize(),'name'=>$file->getClientOriginalName()] : [];
                 return $this->agency->uploadMedia($input, $legacyFile);
             };
+            $taskFileUpload = function () use ($request, $input): int {
+                $files = $request->file('task_files', []);
+                if (! is_array($files)) { $files = [$files]; }
+                if (! $files && $request->file('task_file')) { $files = [$request->file('task_file')]; }
+                return $this->agency->uploadTaskFiles((int)($input['task_id'] ?? 0), $files, (bool)($input['client_visible'] ?? false));
+            };
+            $invoiceProfileSave = fn(): mixed => $this->agency->saveInvoiceProfile($input, $request->file('signature_image'));
             $handlers = [
                 'create_lead'=>['leads.access', fn()=>$this->agency->createLead($input), 'leads', 'Lead created and added to the pipeline.'],
                 'update_lead'=>['leads.access', fn()=>$this->agency->updateLead($input), 'lead', 'Lead details and qualification updated.'],
@@ -131,6 +166,8 @@ final class AgencyController extends Controller
                 'create_consultation'=>['discovery.access', fn()=>$this->agency->createConsultation($input), 'discovery', 'Discovery consultation saved to the relationship record.'],
                 'convert_lead'=>['leads.access', fn()=>$this->agency->convertLead((int)$input['lead_id']), 'clients', 'Lead converted into a client.'],
                 'create_client'=>['clients.access', fn()=>$this->agency->createClient($input), 'clients', 'Client created successfully.'],
+                'save_client_portal_access'=>['clients.access', fn()=>$this->agency->saveClientPortalAccess($input), 'client', 'Client portal access saved securely.'],
+                'reset_client_portal_password'=>['clients.access', fn()=>$this->agency->resetClientPortalPassword($input), 'client', 'A new temporary client password has been issued.'],
                 'create_package'=>['packages.access', fn()=>$this->agency->createPackage($input), 'packages', 'Package, pricing, services, and limits saved.'],
                 'create_service'=>['services.access', fn()=>$this->agency->createService($input), 'services', 'Service added to the catalog.'],
                 'update_service'=>['settings.access', fn()=>$this->agency->updateService($input), 'settings', 'Service pricing updated successfully.'],
@@ -142,7 +179,10 @@ final class AgencyController extends Controller
                 'delete_project'=>['projects.access', fn()=>$this->agency->deleteProject((int)$input['project_id']), 'projects', 'Project deleted successfully.'],
                 'update_task'=>['tasks.access', fn()=>$this->agency->updateTask($input), 'tasks', 'Task updated successfully.'],
                 'duplicate_task'=>['tasks.access', fn()=>$this->agency->duplicateTask((int)$input['task_id']), 'tasks', 'Task duplicated successfully.'],
-                'add_task_note'=>['tasks.access', fn()=>$this->agency->addTaskNote((int)$input['task_id'],(string)($input['note']??'')), 'tasks', 'Task note added to the activity trail.'],
+                'add_task_note'=>['tasks.access', fn()=>$this->agency->addTaskNote((int)$input['task_id'],(string)($input['note']??''),(bool)($input['client_visible']??false)), 'tasks', 'Task update added to the activity trail.'],
+                'upload_task_file'=>['tasks.access', $taskFileUpload, 'tasks', 'Task file uploaded securely.'],
+                'update_task_file_visibility'=>['tasks.access', fn()=>$this->agency->updateTaskFileVisibility((int)$input['file_id'],(bool)($input['client_visible']??false)), 'tasks', 'File visibility updated.'],
+                'update_task_note_visibility'=>['tasks.access', fn()=>$this->agency->updateTaskNoteVisibility((int)$input['update_id'],(bool)($input['client_visible']??false)), 'tasks', 'Update visibility changed.'],
                 'delete_task'=>['tasks.access', fn()=>$this->agency->deleteTask((int)$input['task_id']), 'tasks', 'Task deleted successfully.'],
                 'create_visit'=>['visits.access', fn()=>$this->agency->createVisit($input), 'visits', 'Content visit scheduled.'],
                 'complete_visit'=>['visits.access', fn()=>$this->agency->completeVisit((int)$input['visit_id']), 'visits', 'Visit completed and allowance usage recalculated.'],
@@ -150,6 +190,8 @@ final class AgencyController extends Controller
                 'upload_media'=>['media.access', $upload, 'media', 'Media uploaded securely.'],
                 'create_invoice'=>['invoices.access', fn()=>$this->agency->createInvoice($input), 'invoices', 'Invoice created and marked as sent.'],
                 'record_payment'=>['invoices.access', fn()=>$this->agency->recordPayment($input), 'invoices', 'Payment recorded and balance updated.'],
+                'save_invoice_profile'=>['settings.access', $invoiceProfileSave, 'settings', 'Invoice branding, address, terms, and signature updated.'],
+                'save_bank_account'=>['settings.access', fn()=>$this->agency->saveBankAccount($input), 'settings', 'Bank account details saved.'],
                 'create_employee'=>['team.access', fn()=>$this->agency->createEmployee($input), 'team', 'Employee created successfully.'],
                 'log_time'=>['time.access', fn()=>$this->agency->logTime($input), 'time', 'Time entry saved and project hours updated.'],
                 'update_opportunity'=>['pipeline.access', fn()=>$this->agency->updateOpportunity($input), 'pipeline', 'Opportunity details updated.'],
@@ -178,18 +220,20 @@ final class AgencyController extends Controller
                 'save_quote_package_item'=>['settings.access', fn()=>$this->quotes->savePackageItem($input), 'quote_settings', 'Package item price and description updated.'],
                 'remove_quote_package_item'=>['settings.access', fn()=>$this->quotes->removePackageItem((int)$input['package_item_id']), 'quote_settings', 'Service removed from the setup package.'],
                 'save_quote_plan'=>['settings.access', fn()=>$this->quotes->savePlan($input), 'quote_settings', 'Support or membership plan updated.'],
+                'change_password'=>[null, fn()=>$this->agency->changeOwnPassword($input), 'change_password', 'Your password has been changed successfully.'],
             ];
             if (! isset($handlers[$action])) { throw new InvalidArgumentException('Unsupported request.'); }
             [$permission,$handler,$successRoute,$message] = $handlers[$action];
-            if (! $this->auth->can($permission)) { throw new InvalidArgumentException('Your role cannot perform this action.'); }
+            if ($permission !== null && ! $this->auth->can($permission)) { throw new InvalidArgumentException('Your role cannot perform this action.'); }
             $result = $handler();
             $parameters = [];
-            if (in_array($action, ['add_note','update_health','assign_package'], true)) { $parameters['id'] = (int) $input['client_id']; }
+            if (in_array($action, ['add_note','update_health','assign_package','save_client_portal_access','reset_client_portal_password'], true)) { $parameters['id'] = (int) $input['client_id']; }
             if (in_array($action, ['update_lead','add_lead_followup','update_lead_followup'], true)) { $parameters['id'] = (int) $input['lead_id']; }
             if ($action === 'convert_lead' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
             if ($action === 'move_opportunity' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
             if (in_array($action,['save_quote','duplicate_quote','record_quote_delivery'],true) && is_int($result)) { $parameters['id'] = $action==='record_quote_delivery' ? (int)$input['proposal_id'] : $result; }
             if ($action === 'onboard_quote' && is_int($result)) { $parameters['id'] = $result; }
+            if ($action === 'create_invoice' && is_int($result)) { $successRoute='invoice'; $parameters['id']=$result; }
             return redirect($listReturnUrl ?? agency_url($successRoute, $parameters))->with('success', $message);
         } catch (Throwable $exception) {
             report($exception);
@@ -225,7 +269,7 @@ final class AgencyController extends Controller
         parse_str((string) ($parts['query'] ?? ''), $query);
         $allowed = $route === 'projects'
             ? ['client_id', 'project_type', 'status', 'table_search', 'table_page', 'table_sort', 'table_direction']
-            : ['project_id', 'assigned_employee_id', 'status', 'table_search', 'table_page', 'table_sort', 'table_direction'];
+            : ['project_id', 'assigned_employee_id', 'status', 'q', 'table_search', 'table_page', 'table_sort', 'table_direction'];
         $filtered = [];
         foreach ($allowed as $key) {
             if (isset($query[$key]) && is_scalar($query[$key]) && trim((string) $query[$key]) !== '') {
@@ -240,7 +284,7 @@ final class AgencyController extends Controller
     {
         $candidate = (string) ($request->query('month') ?? $request->route('extra', ''));
         $month = preg_match('/^\d{4}-\d{2}$/', $candidate) ? $candidate : date('Y-m');
-        return $this->laravelPage('calendar', ['title'=>'Agency Calendar','month'=>$month,'events'=>$this->agency->calendarEvents($month),'options'=>$options], $route);
+        return $this->laravelPage('calendar', ['title'=>'Agency Calendar','month'=>$month,'events'=>$this->agency->calendarEvents($month),'options'=>$this->agency->calendarFilterOptions()], $route);
     }
 
     private function laravelPage(string $view, array $data, string $route, int $status = 200): mixed
@@ -260,6 +304,67 @@ final class AgencyController extends Controller
         $path = realpath(storage_path('app/private/uploads/'.$media['file_path']));
         if (! $base || ! $path || ! str_starts_with($path, $base.DIRECTORY_SEPARATOR) || ! is_file($path)) { abort(404); }
         return response()->download($path, $media['original_name'], ['Content-Type'=>$media['mime_type']]);
+    }
+
+    private function laravelDownloadTaskFile(int $id): mixed
+    {
+        try {
+            $file = $this->agency->taskFileForDownload($id);
+        } catch (InvalidArgumentException) {
+            abort(403);
+        }
+        if (! $file) { abort(404); }
+        $base = realpath(storage_path('app/private/task-files'));
+        $path = realpath(storage_path('app/private/task-files/'.$file['storage_path']));
+        if (! $base || ! $path || ! str_starts_with($path, $base.DIRECTORY_SEPARATOR) || ! is_file($path)) { abort(404); }
+        return response()->download($path, $file['original_name'], [
+            'Content-Type'=>$file['mime_type'] ?: 'application/octet-stream',
+            'X-Content-Type-Options'=>'nosniff',
+        ]);
+    }
+
+    private function laravelViewTaskFile(int $id): mixed
+    {
+        [$file,$path] = $this->taskFileResponseData($id);
+        $extension = strtolower(pathinfo((string)$file['original_name'], PATHINFO_EXTENSION));
+        $previewable = ['jpg','jpeg','png','gif','webp','pdf','txt','csv','mp4','mov','webm','mp3','wav','m4a'];
+        if (! in_array($extension, $previewable, true)) {
+            return $this->laravelDownloadTaskFile($id);
+        }
+        return response()->file($path, [
+            'Content-Type'=>$file['mime_type'] ?: 'application/octet-stream',
+            'Content-Disposition'=>'inline; filename="'.addcslashes((string)$file['original_name'], '"\\').'"',
+            'X-Content-Type-Options'=>'nosniff',
+        ]);
+    }
+
+    private function taskFileResponseData(int $id): array
+    {
+        try { $file = $this->agency->taskFileForDownload($id); }
+        catch (InvalidArgumentException) { abort(403); }
+        if (! $file) { abort(404); }
+        $base = realpath(storage_path('app/private/task-files'));
+        $path = realpath(storage_path('app/private/task-files/'.$file['storage_path']));
+        if (! $base || ! $path || ! str_starts_with($path, $base.DIRECTORY_SEPARATOR) || ! is_file($path)) { abort(404); }
+        return [$file,$path];
+    }
+
+    private function laravelInvoicePdf(int $id): mixed
+    {
+        $invoice = $this->agency->invoice($id);
+        if (! $invoice) { abort(404); }
+        $options = new Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('chroot', [public_path(), storage_path('app/private/invoice-signatures')]);
+        $dompdf = new Dompdf($options);
+        $dompdf->loadHtml(view('agency.invoice-pdf', ['invoice'=>$invoice,'pdfMode'=>true])->render(), 'UTF-8');
+        $dompdf->setPaper('A4');
+        $dompdf->render();
+        return response($dompdf->output(), 200, [
+            'Content-Type'=>'application/pdf',
+            'Content-Disposition'=>'attachment; filename="'.$invoice['invoice_number'].'.pdf"',
+            'X-Content-Type-Options'=>'nosniff',
+        ]);
     }
 
     public function handle(): void
@@ -489,7 +594,7 @@ final class AgencyController extends Controller
 
     private function safeRoute(string $route): string
     {
-        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_settings'];
+        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','task_file','task_file_view','visits','content','media','calendar','invoices','invoice','invoice_pdf','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_settings','change_password'];
         return in_array($route,$allowed,true) ? $route : 'dashboard';
     }
 

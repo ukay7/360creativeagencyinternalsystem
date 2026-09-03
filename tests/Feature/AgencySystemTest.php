@@ -4,7 +4,9 @@ namespace Tests\Feature;
 
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Crypt;
 use Tests\TestCase;
 
 class AgencySystemTest extends TestCase
@@ -21,7 +23,7 @@ class AgencySystemTest extends TestCase
         $response->assertRedirect('/dashboard');
         $this->assertAuthenticated();
 
-        foreach (['dashboard','quote_studio','saved_quotes','quote_settings','leads','pipeline','discovery','clients','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','time','team','reports','settings','audit','search?q=client'] as $module) {
+        foreach (['dashboard','quote_studio','saved_quotes','quote_settings','leads','pipeline','discovery','clients','packages','services','proposals','contracts','projects','tasks','visits','content','media','calendar','invoices','time','team','reports','settings','audit','change_password','search?q=client'] as $module) {
             $this->get('/'.$module)->assertOk()->assertSee('360 Creative Agency');
         }
     }
@@ -261,7 +263,7 @@ class AgencySystemTest extends TestCase
         $navigation = app(\App\Services\Auth::class)->navigationItems();
 
         $this->assertSame(
-            ['Command Center', 'Quote & Onboarding', 'Project Delivery', 'Operations & Finance', 'Settings'],
+            ['Command Center', 'Quote & Onboarding', 'Project Delivery', 'Operations & Finance', 'Settings', 'Change Password'],
             array_column($navigation, 'label')
         );
 
@@ -288,6 +290,8 @@ class AgencySystemTest extends TestCase
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
         $package=DB::table('packages')->where('package_type','quote_setup')->where('tier','basic')->first();
+        $supportPackage=DB::table('packages')->where('package_type','support_contract')->where('tier','starter')->first();
+        $expectedSupportMonthly=(float)DB::table('package_items')->where('package_id',$supportPackage->id)->where('included',1)->sum(DB::raw('quantity * unit_price'));
         $items=DB::table('package_items')->where('package_id',$package->id)->orderBy('sort_order')->limit(2)->get();
         $payload=$items->map(fn($item)=>[
             'service_id'=>$item->service_id,'list_price'=>(float)$item->unit_price,'discount_percent'=>10,'custom_price'=>null,
@@ -310,9 +314,9 @@ class AgencySystemTest extends TestCase
         $this->assertSame('medium',$quote->recommended_tier);
         $this->assertSame('basic',$quote->selected_tier);
         $this->assertGreaterThan(0,(float)$quote->support_amount);
-        $this->assertSame(995.0,(float)$quote->membership_monthly_price);
+        $this->assertSame($expectedSupportMonthly,(float)$quote->membership_monthly_price);
         $this->assertSame(3,(int)$quote->membership_duration_months);
-        $this->assertSame(2985.0,(float)$quote->membership_amount);
+        $this->assertSame($expectedSupportMonthly * 3,(float)$quote->membership_amount);
         $this->assertDatabaseHas('leads',['email'=>'rami@example.test','status'=>'proposal']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'service']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support']);
@@ -739,7 +743,7 @@ class AgencySystemTest extends TestCase
             ->assertOk()->assertSee('Simplified Task QA')->assertSee('name="project_id"', false)
             ->assertSee('name="assigned_employee_id"', false)->assertSee('name="status"', false)
             ->assertSee('name="return_url"', false)->assertSee('data-preserve-table-state', false)
-            ->assertSee('Duplicate')->assertSee('Logs')->assertSee('Add note')->assertSee('Delete')
+            ->assertSee('Duplicate')->assertSee('Logs')->assertSee('Add progress note')->assertSee('Delete')
             ->assertSee('Edit task')->assertDontSee('name="estimated_hours"', false);
 
         $projectReturnUrl='/projects?client_id='.$clientId.'&project_type=Website&status=planning&table_search=simplified&table_sort=0&table_direction=desc';
@@ -1119,5 +1123,264 @@ class AgencySystemTest extends TestCase
             ->assertSee('Task workload')
             ->assertDontSee('Sales funnel')
             ->assertDontSee('Team utilization');
+    }
+
+    public function test_client_portal_is_isolated_and_supports_multiple_projects(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        if (DB::table('clients')->where('status', 'active')->count() < 2) {
+            $otherBusinessId = DB::table('businesses')->insertGetId([
+                'name'=>'Portal Isolation Other Business', 'industry'=>'Quality assurance', 'created_at'=>now(),
+            ]);
+            DB::table('clients')->insert([
+                'business_id'=>$otherBusinessId, 'name'=>'Other Client QA', 'email'=>'other-client@example.test',
+                'status'=>'active', 'health'=>'healthy', 'joined_at'=>now()->toDateString(), 'created_at'=>now(),
+            ]);
+        }
+        $clients = DB::table('clients')->where('status', 'active')->orderBy('id')->limit(2)->get();
+        $this->assertCount(2, $clients);
+        $client = $clients[0];
+        $otherClient = $clients[1];
+        $businessName = (string) DB::table('businesses')->where('id', $client->business_id)->value('name');
+        $employee = DB::table('employees')->where('status', 'active')->orderBy('id')->first();
+
+        foreach (['Client Portal Website', 'Client Portal Campaign'] as $projectName) {
+            $this->post('/projects', [
+                'action'=>'create_project', 'client_id'=>$client->id, 'name'=>$projectName,
+                'project_type'=>'Delivery', 'start_date'=>now()->toDateString(),
+            ])->assertRedirect('/projects')->assertSessionHas('success');
+        }
+        $projectId = (int) DB::table('projects')->where('client_id', $client->id)->where('name', 'Client Portal Website')->value('id');
+        $otherProjectId = DB::table('projects')->insertGetId([
+            'client_id'=>$otherClient->id, 'name'=>'Private Other Client Project', 'project_type'=>'Delivery',
+            'start_date'=>now()->toDateString(), 'status'=>'planning', 'priority'=>'medium', 'budget'=>0,
+            'estimated_hours'=>0, 'actual_hours'=>0, 'created_at'=>now(),
+        ]);
+        $this->post('/tasks', [
+            'action'=>'create_task', 'project_id'=>$projectId, 'title'=>'Client visible launch checklist',
+            'description'=>'Public delivery scope.', 'due_date'=>now()->toDateString(), 'priority'=>'high',
+            'assigned_employee_ids'=>[$employee->id],
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        DB::table('project_tasks')->insert([
+            'project_id'=>$otherProjectId, 'client_id'=>$otherClient->id, 'title'=>'Other client confidential task',
+            'description'=>'Never expose this task.', 'due_date'=>now()->toDateString(), 'priority'=>'medium',
+            'status'=>'todo', 'estimated_hours'=>0, 'actual_hours'=>0, 'created_at'=>now(),
+        ]);
+
+        $this->post('/client?id='.$client->id, [
+            'action'=>'save_client_portal_access', 'client_id'=>$client->id,
+            'name'=>'Portal Client QA', 'email'=>'portal-client-qa@example.test',
+            'password'=>'PortalPass!2026', 'status'=>'active',
+        ])->assertRedirect('/client?id='.$client->id)->assertSessionHas('success');
+        $portalUser = User::query()->where('email', 'portal-client-qa@example.test')->firstOrFail();
+        $this->assertDatabaseHas('clients', ['id'=>$client->id, 'portal_user_id'=>$portalUser->id]);
+
+        auth()->logout();
+        $this->post('/login', [
+            'email'=>'portal-client-qa@example.test', 'password'=>'PortalPass!2026',
+        ])->assertRedirect('/dashboard');
+        $this->assertAuthenticatedAs($portalUser);
+        $this->get('/dashboard')->assertOk()
+            ->assertSee('360 CLIENT PORTAL')->assertSee($businessName)
+            ->assertSee('Projects in progress')->assertDontSee('Quick add');
+        $this->get('/projects')->assertOk()
+            ->assertSee('Client Portal Website')->assertSee('Client Portal Campaign')
+            ->assertDontSee('Private Other Client Project')->assertDontSee($employee->name);
+        $this->get('/tasks')->assertOk()
+            ->assertSee('Client visible launch checklist')->assertSee('Open details')
+            ->assertDontSee('Other client confidential task')->assertDontSee($employee->name);
+        $this->get('/calendar?month='.now()->format('Y-m'))->assertOk()
+            ->assertSee('My Project Calendar')->assertSee('Client visible launch checklist')
+            ->assertSee('All projects')->assertDontSee('Other client confidential task')->assertDontSee('All employees');
+        $this->get('/clients')->assertForbidden();
+
+        $taskId = (int) DB::table('project_tasks')->where('title', 'Client visible launch checklist')->value('id');
+        $this->post('/tasks', ['action'=>'task_status', 'id'=>$taskId, 'status'=>'completed'])
+            ->assertRedirect('/tasks')->assertSessionHas('danger');
+        $this->assertDatabaseHas('project_tasks', ['id'=>$taskId, 'status'=>'todo']);
+        $this->post('/tasks', ['action'=>'create_task', 'project_id'=>$projectId, 'title'=>'Client must not create this'])
+            ->assertRedirect('/tasks')->assertSessionHas('danger');
+        $this->assertDatabaseMissing('project_tasks', ['title'=>'Client must not create this']);
+    }
+
+    public function test_repeat_client_email_reuses_account_and_client_can_change_generated_password(): void
+    {
+        $admin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $this->actingAs($admin);
+        $businessId = DB::table('businesses')->insertGetId([
+            'name'=>'Repeat Client QA', 'industry'=>'Quality assurance', 'created_at'=>now(),
+        ]);
+        $clientId = DB::table('clients')->insertGetId([
+            'business_id'=>$businessId, 'name'=>'Repeat Client Contact', 'email'=>'repeat-client@example.test',
+            'status'=>'active', 'health'=>'healthy', 'joined_at'=>now()->toDateString(), 'created_at'=>now(),
+        ]);
+        $package = DB::table('packages')->where('package_type', 'quote_setup')->where('active', 1)->orderBy('display_order')->first();
+        $packageItem = DB::table('package_items')->where('package_id', $package->id)->where('included', 1)->orderBy('sort_order')->first();
+        $answers = [];
+        foreach (config('quote_studio.assessment') as $question) { $answers[$question['key']] = $question['options'][0]['value']; }
+
+        $this->post('/quote_studio', [
+            'action'=>'save_quote', 'business_name'=>'Repeat Client QA', 'contact_name'=>'Repeat Client Contact',
+            'contact_email'=>'REPEAT-client@example.test', 'business_stage'=>'existing_business', 'years_operating'=>5,
+            'locale'=>'en', 'assessment_json'=>json_encode($answers), 'selected_tier'=>$package->tier,
+            'items_json'=>json_encode([[
+                'service_id'=>$packageItem->service_id, 'list_price'=>(float)$packageItem->unit_price,
+                'discount_percent'=>0, 'custom_price'=>null, 'description'=>$packageItem->description,
+            ]]),
+            'support_plan'=>'none', 'membership_plan'=>'none', 'membership_term'=>0, 'tax_percent'=>13, 'validity_days'=>7,
+        ])->assertSessionHas('success');
+
+        $quote = DB::table('proposals')->where('contact_email', 'repeat-client@example.test')->latest('id')->first();
+        $this->assertSame($clientId, (int)$quote->client_id);
+        $this->assertNull($quote->lead_id);
+        $this->post('/saved_quotes', ['action'=>'onboard_quote', 'proposal_id'=>$quote->id])
+            ->assertRedirect('/client?id='.$clientId)->assertSessionHas('success');
+
+        $client = DB::table('clients')->where('id', $clientId)->first();
+        $this->assertNotNull($client->portal_user_id);
+        $this->assertNotNull($client->portal_password_encrypted);
+        $firstTemporaryPassword = Crypt::decryptString($client->portal_password_encrypted);
+        $this->assertTrue(password_verify($firstTemporaryPassword, (string)DB::table('users')->where('id', $client->portal_user_id)->value('password_hash')));
+        $this->get('/client?id='.$clientId)->assertOk()->assertSee('Login credentials')->assertSee($firstTemporaryPassword);
+
+        $this->post('/client?id='.$clientId, [
+            'action'=>'reset_client_portal_password', 'client_id'=>$clientId, 'password'=>'',
+        ])->assertRedirect('/client?id='.$clientId)->assertSessionHas('success');
+        $client = DB::table('clients')->where('id', $clientId)->first();
+        $resetTemporaryPassword = Crypt::decryptString($client->portal_password_encrypted);
+        $this->assertNotSame($firstTemporaryPassword, $resetTemporaryPassword);
+
+        auth()->logout();
+        $this->post('/login', ['email'=>'repeat-client@example.test', 'password'=>$resetTemporaryPassword])
+            ->assertRedirect('/dashboard');
+        $this->get('/change_password')->assertOk()->assertSee('Change Password')->assertSee('Current password');
+        $this->post('/change_password', [
+            'action'=>'change_password', 'current_password'=>$resetTemporaryPassword,
+            'new_password'=>'ClientChosen!2026', 'new_password_confirmation'=>'ClientChosen!2026',
+        ])->assertRedirect('/change_password')->assertSessionHas('success');
+
+        $client = DB::table('clients')->where('id', $clientId)->first();
+        $this->assertNull($client->portal_password_encrypted);
+        $this->assertNotNull($client->portal_password_changed_at);
+        $this->assertTrue(password_verify('ClientChosen!2026', (string)DB::table('users')->where('id', $client->portal_user_id)->value('password_hash')));
+    }
+
+    public function test_task_updates_and_files_respect_client_visibility(): void
+    {
+        $admin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $this->actingAs($admin);
+        $client = DB::table('clients')->where('status', 'active')->orderBy('id')->first();
+        $projectId = DB::table('projects')->insertGetId([
+            'client_id'=>$client->id, 'name'=>'Deliverable Security QA', 'project_type'=>'Delivery',
+            'start_date'=>now()->toDateString(), 'status'=>'active', 'priority'=>'medium', 'budget'=>0,
+            'estimated_hours'=>0, 'actual_hours'=>0, 'created_at'=>now(),
+        ]);
+        $taskId = DB::table('project_tasks')->insertGetId([
+            'project_id'=>$projectId, 'client_id'=>$client->id, 'title'=>'Secure deliverable task',
+            'description'=>'Client-safe task details.', 'due_date'=>now()->addDay()->toDateString(),
+            'priority'=>'medium', 'status'=>'in_progress', 'estimated_hours'=>0, 'actual_hours'=>0,
+            'created_at'=>now(),
+        ]);
+
+        $this->post('/tasks', [
+            'action'=>'add_task_note', 'task_id'=>$taskId, 'note'=>'Client-visible milestone reached.',
+            'client_visible'=>'1',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->post('/tasks', [
+            'action'=>'add_task_note', 'task_id'=>$taskId, 'note'=>'Internal production note.',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->post('/tasks', [
+            'action'=>'upload_task_file', 'task_id'=>$taskId, 'client_visible'=>'1',
+            'task_file'=>UploadedFile::fake()->createWithContent('approved-concept.pdf', 'safe deliverable'),
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->post('/tasks', [
+            'action'=>'upload_task_file', 'task_id'=>$taskId,
+            'task_file'=>UploadedFile::fake()->createWithContent('internal-notes.txt', 'private note'),
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+
+        $clientFile = DB::table('task_files')->where('task_id', $taskId)->where('visibility', 'client')->first();
+        $internalFile = DB::table('task_files')->where('task_id', $taskId)->where('visibility', 'internal')->first();
+        $this->assertNotNull($clientFile);
+        $this->assertNotNull($internalFile);
+        $this->assertDatabaseHas('task_updates', ['task_id'=>$taskId, 'body'=>'Client-visible milestone reached.', 'visibility'=>'client']);
+        $this->assertDatabaseHas('task_updates', ['task_id'=>$taskId, 'body'=>'Internal production note.', 'visibility'=>'internal']);
+
+        $this->post('/client?id='.$client->id, [
+            'action'=>'save_client_portal_access', 'client_id'=>$client->id,
+            'name'=>'Deliverable Client QA', 'email'=>'deliverable-client@example.test',
+            'password'=>'PortalPass!2026', 'status'=>'active',
+        ])->assertRedirect('/client?id='.$client->id)->assertSessionHas('success');
+        $this->actingAs(User::query()->where('email', 'deliverable-client@example.test')->firstOrFail());
+
+        $this->get('/tasks')->assertOk()
+            ->assertSee('Secure deliverable task')->assertSee('Client-visible milestone reached.')
+            ->assertSee('approved-concept.pdf')->assertDontSee('Internal production note.')
+            ->assertDontSee('internal-notes.txt')->assertSee('Read-only access')
+            ->assertDontSee('Add a message')->assertDontSee('Share a file');
+        $this->get('/task_file?id='.$clientFile->id)->assertOk();
+        $this->get('/task_file_view?id='.$clientFile->id)->assertOk();
+        $this->get('/task_file?id='.$internalFile->id)->assertNotFound();
+        $this->post('/tasks', [
+            'action'=>'add_task_note', 'task_id'=>$taskId, 'note'=>'Client feedback posted securely.',
+        ])->assertRedirect('/tasks')->assertSessionHas('danger');
+        $this->assertDatabaseMissing('task_updates', ['task_id'=>$taskId, 'body'=>'Client feedback posted securely.']);
+        $this->post('/tasks', [
+            'action'=>'upload_task_file', 'task_id'=>$taskId,
+            'task_files'=>[UploadedFile::fake()->createWithContent('client-upload.txt', 'blocked')],
+        ])->assertRedirect('/tasks')->assertSessionHas('danger');
+        $this->assertDatabaseMissing('task_files', ['task_id'=>$taskId, 'original_name'=>'client-upload.txt']);
+
+        $this->actingAs($admin);
+        $this->post('/tasks', [
+            'action'=>'update_task_file_visibility', 'file_id'=>$internalFile->id, 'client_visible'=>'1',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->assertDatabaseHas('task_files', ['id'=>$internalFile->id, 'visibility'=>'client']);
+        $internalUpdateId = DB::table('task_updates')->where('task_id',$taskId)->where('body','Internal production note.')->value('id');
+        $this->post('/tasks', [
+            'action'=>'update_task_note_visibility', 'update_id'=>$internalUpdateId, 'client_visible'=>'1',
+        ])->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->assertDatabaseHas('task_updates', ['id'=>$internalUpdateId, 'visibility'=>'client']);
+
+        foreach ([$clientFile, $internalFile] as $file) {
+            $path = storage_path('app/private/task-files'.DIRECTORY_SEPARATOR.$file->storage_path);
+            if (is_file($path)) { @unlink($path); }
+        }
+    }
+
+    public function test_detailed_invoices_use_bank_milestone_line_items_and_generate_pdf(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $client = DB::table('clients')->where('status','active')->orderBy('id')->first();
+        $projectId = DB::table('projects')->insertGetId([
+            'client_id'=>$client->id,'name'=>'Invoice Workflow QA','project_type'=>'Delivery',
+            'start_date'=>now()->toDateString(),'status'=>'active','priority'=>'medium','budget'=>0,
+            'estimated_hours'=>0,'actual_hours'=>0,'created_at'=>now(),
+        ]);
+        $this->post('/settings', [
+            'action'=>'save_bank_account','account_name'=>'CAD Operating','bank_name'=>'QA Bank',
+            'account_holder'=>'360 Creative Agency','account_number'=>'1234567','currency'=>'CAD',
+            'active'=>'1','is_default'=>'1','payment_instructions'=>'Include the invoice number.',
+        ])->assertRedirect('/settings')->assertSessionHas('success');
+        $bankId = (int) DB::table('bank_accounts')->where('account_name','CAD Operating')->value('id');
+
+        $this->post('/invoices', [
+            'action'=>'create_invoice','client_id'=>$client->id,'project_id'=>$projectId,
+            'bank_account_id'=>$bankId,'due_date'=>now()->addDays(14)->toDateString(),'status'=>'sent',
+            'currency'=>'CAD','purchase_order_number'=>'PO-QA-44','milestone_title'=>'Design approved',
+            'milestone_description'=>'The approved design milestone is ready for billing.',
+            'item_description'=>['Design milestone','Production assets'],
+            'item_quantity'=>[1,2],'item_unit_price'=>[1000,250],
+            'discount'=>100,'tax_percent'=>13,'payment_terms'=>'Due within 14 days.',
+        ])->assertRedirectContains('/invoice?id=')->assertSessionHas('success');
+        $invoice = DB::table('invoices')->where('project_id',$projectId)->latest('id')->first();
+        $this->assertNotNull($invoice);
+        $this->assertSame(1500.0,(float)$invoice->subtotal);
+        $this->assertSame(1582.0,(float)$invoice->total);
+        $this->assertSame($bankId,(int)$invoice->bank_account_id);
+        $this->assertSame(2,DB::table('invoice_items')->where('invoice_id',$invoice->id)->count());
+        $this->get('/invoice?id='.$invoice->id)->assertOk()
+            ->assertSee('Design approved')->assertSee('QA Bank')->assertSee('Production assets')
+            ->assertSee('Download PDF');
+        $this->get('/invoice_pdf?id='.$invoice->id)->assertOk()->assertHeader('content-type','application/pdf');
     }
 }
