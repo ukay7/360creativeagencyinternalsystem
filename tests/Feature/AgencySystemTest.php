@@ -1388,6 +1388,12 @@ class AgencySystemTest extends TestCase
     public function test_detailed_invoices_use_bank_milestone_line_items_and_generate_pdf(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $this->get('/settings')->assertOk()->assertSee('Number (OCN/BIN)');
+        $this->post('/settings', [
+            'action'=>'save_invoice_profile','agency_name'=>'360 Creative Agency',
+            'ocn_bin'=>'OCN-BIN-QA-2026','country'=>'Canada',
+        ])->assertRedirect('/settings')->assertSessionHas('success');
+        $this->assertDatabaseHas('invoice_profiles', ['ocn_bin'=>'OCN-BIN-QA-2026']);
         $client = DB::table('clients')->where('status','active')->orderBy('id')->first();
         $projectId = DB::table('projects')->insertGetId([
             'client_id'=>$client->id,'name'=>'Invoice Workflow QA','project_type'=>'Delivery',
@@ -1418,7 +1424,8 @@ class AgencySystemTest extends TestCase
         $this->assertSame(2,DB::table('invoice_items')->where('invoice_id',$invoice->id)->count());
         $this->get('/invoice?id='.$invoice->id)->assertOk()
             ->assertSee('Design approved')->assertSee('QA Bank')->assertSee('Production assets')
-            ->assertSee('Download PDF');
+            ->assertSee('Number (OCN/BIN)')->assertSee('OCN-BIN-QA-2026')->assertSee('Download PDF');
+        $this->get('/invoices')->assertOk()->assertSee('Number (OCN/BIN)')->assertSee('OCN-BIN-QA-2026');
         $this->get('/invoice_pdf?id='.$invoice->id)->assertOk()->assertHeader('content-type','application/pdf');
     }
 }

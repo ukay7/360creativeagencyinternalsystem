@@ -6,7 +6,7 @@ $overdue=count(array_filter($rows,static fn(array $row): bool => (float)$row['am
 $statuses=['draft'=>'Draft','sent'=>'Sent','partially_paid'=>'Partially paid','paid'=>'Paid','overdue'=>'Overdue','cancelled'=>'Cancelled'];
 $invoiceProjects=$options['invoice_projects']??$options['projects'];
 ?>
-<div class="page-title-wrap invoice-page-title"><div><span class="eyebrow">FINANCIAL OPERATIONS</span><h1>Invoices & Payments</h1><p>Create detailed milestone invoices, select deposit instructions, track collections, and produce branded PDFs.</p></div><button class="btn btn-primary" data-toggle="modal" data-target="#modal-invoice"><i class="fal fa-file-invoice-dollar mr-1"></i> New invoice</button></div>
+<div class="page-title-wrap invoice-page-title"><div><span class="eyebrow">FINANCIAL OPERATIONS</span><h1>Invoices & Payments</h1><p>Create detailed milestone invoices, select deposit instructions, track collections, and produce branded PDFs.</p><?php if(!empty($invoiceProfile['ocn_bin'])): ?><p class="mb-0"><strong>Number (OCN/BIN):</strong> <?= e($invoiceProfile['ocn_bin']) ?></p><?php endif; ?></div><button class="btn btn-primary" data-toggle="modal" data-target="#modal-invoice"><i class="fal fa-file-invoice-dollar mr-1"></i> New invoice</button></div>
 
 <div class="invoice-kpis">
     <div><span>Total billed</span><strong><?= e(money($billed)) ?></strong><small><?= count($rows) ?> filtered invoices</small></div>

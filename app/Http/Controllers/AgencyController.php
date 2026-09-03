@@ -95,7 +95,7 @@ final class AgencyController extends Controller
             'content' => $this->laravelPage('entity-list', array_merge($this->contentPage($options), ['rows'=>$this->agency->content()]), $route),
             'media' => $this->laravelPage('media', ['title'=>'Media Library','rows'=>$this->agency->media(),'options'=>$options], $route),
             'calendar' => $this->calendarPage($request, $options, $route),
-            'invoices' => $this->laravelPage('invoices', ['title'=>'Invoices & Payments','rows'=>$this->agency->invoices($request->query()),'filters'=>$request->query(),'options'=>$options,'bankAccounts'=>$this->agency->bankAccounts(true)], $route),
+            'invoices' => $this->laravelPage('invoices', ['title'=>'Invoices & Payments','rows'=>$this->agency->invoices($request->query()),'filters'=>$request->query(),'options'=>$options,'bankAccounts'=>$this->agency->bankAccounts(true),'invoiceProfile'=>$this->agency->invoiceProfile()], $route),
             'invoice' => ($invoice=$this->agency->invoice((int)($request->query('id') ?? $request->route('extra',0))))
                 ? $this->laravelPage('invoice', ['title'=>$invoice['invoice_number'],'invoice'=>$invoice], $route)
                 : $this->laravelPage('error',['title'=>'Invoice not found','message'=>'The requested invoice does not exist.'],$route,404),

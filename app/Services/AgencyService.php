@@ -447,7 +447,7 @@ final class AgencyService
     public function invoiceProfile(): array
     {
         return $this->db->first('SELECT * FROM invoice_profiles ORDER BY id LIMIT 1') ?: [
-            'agency_name'=>'360 Creative Agency','address_line_1'=>'','address_line_2'=>'','city'=>'','province'=>'','postal_code'=>'','country'=>'Canada','email'=>'','phone'=>'','website'=>'','tax_number'=>'','authorized_signatory_name'=>'','authorized_signatory_title'=>'','signature_path'=>null,'default_payment_terms'=>'',
+            'agency_name'=>'360 Creative Agency','address_line_1'=>'','address_line_2'=>'','city'=>'','province'=>'','postal_code'=>'','country'=>'Canada','email'=>'','phone'=>'','website'=>'','tax_number'=>'','ocn_bin'=>'','authorized_signatory_name'=>'','authorized_signatory_title'=>'','signature_path'=>null,'default_payment_terms'=>'',
         ];
     }
 
@@ -458,7 +458,7 @@ final class AgencyService
 
     public function saveInvoiceProfile(array $input, ?UploadedFile $signature = null): void
     {
-        $this->required($input, ['agency_name']);
+        $this->required($input, ['agency_name', 'ocn_bin']);
         if (! empty($input['email']) && ! filter_var($input['email'], FILTER_VALIDATE_EMAIL)) { throw new InvalidArgumentException('Enter a valid invoice contact email address.'); }
         $profile = $this->db->first('SELECT * FROM invoice_profiles ORDER BY id LIMIT 1');
         $signaturePath = $profile['signature_path'] ?? null;
@@ -485,6 +485,7 @@ final class AgencyService
             'phone'=>trim((string)($input['phone'] ?? '')) ?: null,
             'website'=>trim((string)($input['website'] ?? '')) ?: null,
             'tax_number'=>trim((string)($input['tax_number'] ?? '')) ?: null,
+            'ocn_bin'=>trim((string)($input['ocn_bin'] ?? '')),
             'authorized_signatory_name'=>trim((string)($input['authorized_signatory_name'] ?? '')) ?: null,
             'authorized_signatory_title'=>trim((string)($input['authorized_signatory_title'] ?? '')) ?: null,
             'signature_path'=>$signaturePath,
