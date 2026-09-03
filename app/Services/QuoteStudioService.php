@@ -269,8 +269,12 @@ final class QuoteStudioService
         $this->db->transaction(function () use ($quote, $clientId, $id): void {
             $this->db->execute("UPDATE proposals SET client_id=?,status='accepted',updated_at=? WHERE id=?", [$clientId,date('c'),$id]);
             $this->createDeliveryProjects($quote, $clientId);
-            (new AgencyService($this->db, $this->auth))->ensureClientPortalAccess($clientId);
         });
+        try {
+            (new AgencyService($this->db, $this->auth))->ensureClientPortalAccess($clientId);
+        } catch (InvalidArgumentException $exception) {
+            $this->audit('client.portal_provisioning_skipped', $exception->getMessage(), 'client', $clientId);
+        }
         $this->audit('quote.onboarded', 'Quote '.$id.' accepted and client '.$clientId.' onboarded', 'proposal', $id);
         return $clientId;
     }

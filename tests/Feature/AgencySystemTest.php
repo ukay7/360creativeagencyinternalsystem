@@ -1265,6 +1265,44 @@ class AgencySystemTest extends TestCase
         $this->assertTrue(password_verify('ClientChosen!2026', (string)DB::table('users')->where('id', $client->portal_user_id)->value('password_hash')));
     }
 
+    public function test_internal_login_email_does_not_block_client_onboarding(): void
+    {
+        $admin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $this->actingAs($admin);
+        $internalRoleId = DB::table('roles')->where('slug', 'developer')->value('id');
+        DB::table('users')->insert([
+            'role_id'=>$internalRoleId, 'name'=>'Internal Email Owner', 'email'=>'internal-owner@example.test',
+            'password_hash'=>password_hash('InternalPass!2026', PASSWORD_DEFAULT), 'status'=>'active', 'created_at'=>now(),
+        ]);
+        $package = DB::table('packages')->where('package_type', 'quote_setup')->where('active', 1)->orderBy('display_order')->first();
+        $packageItem = DB::table('package_items')->where('package_id', $package->id)->where('included', 1)->orderBy('sort_order')->first();
+        $answers = [];
+        foreach (config('quote_studio.assessment') as $question) { $answers[$question['key']] = $question['options'][0]['value']; }
+
+        $this->post('/quote_studio', [
+            'action'=>'save_quote', 'business_name'=>'Internal Email Client QA', 'contact_name'=>'Client Contact',
+            'contact_email'=>'internal-owner@example.test', 'business_stage'=>'existing_business', 'years_operating'=>3,
+            'locale'=>'en', 'assessment_json'=>json_encode($answers), 'selected_tier'=>$package->tier,
+            'items_json'=>json_encode([[
+                'service_id'=>$packageItem->service_id, 'list_price'=>(float)$packageItem->unit_price,
+                'discount_percent'=>0, 'custom_price'=>null, 'description'=>$packageItem->description,
+            ]]),
+            'support_plan'=>'none', 'membership_plan'=>'none', 'membership_term'=>0, 'tax_percent'=>13, 'validity_days'=>7,
+        ])->assertSessionHas('success');
+
+        $quote = DB::table('proposals')->where('contact_email', 'internal-owner@example.test')->latest('id')->first();
+        $this->post('/saved_quotes', ['action'=>'onboard_quote', 'proposal_id'=>$quote->id])
+            ->assertRedirectContains('/client?id=')->assertSessionHas('success');
+        $quote = DB::table('proposals')->where('id', $quote->id)->first();
+        $client = DB::table('clients')->where('id', $quote->client_id)->first();
+        $this->assertSame('accepted', $quote->status);
+        $this->assertNull($client->portal_user_id);
+        $this->assertGreaterThan(0, DB::table('projects')->where('client_id', $client->id)->count());
+        $this->get('/client?id='.$client->id)->assertOk()
+            ->assertSee('Use a different portal email.')
+            ->assertSee('The client and delivery work were onboarded normally.');
+    }
+
     public function test_task_updates_and_files_respect_client_visibility(): void
     {
         $admin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();

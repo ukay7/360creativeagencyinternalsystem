@@ -259,12 +259,16 @@ final class AgencyService
         $client['visit_usage'] = $client['subscription_id'] ? $this->visitUsage((int) $client['subscription_id']) : null;
         $client['profitability'] = $this->clientProfitability($id);
         $client['portal_temporary_password'] = null;
+        $client['portal_email_conflict'] = null;
         if ($this->isAdministrator() && ! empty($client['portal_password_encrypted'])) {
             try {
                 $client['portal_temporary_password'] = Crypt::decryptString((string)$client['portal_password_encrypted']);
             } catch (\Throwable) {
                 $client['portal_temporary_password'] = null;
             }
+        }
+        if ($this->isAdministrator() && empty($client['portal_user_id']) && ! empty($client['email'])) {
+            $client['portal_email_conflict'] = $this->db->first("SELECT u.name,u.email,r.name AS role_name FROM users u JOIN roles r ON r.id=u.role_id WHERE LOWER(u.email)=? AND r.slug!='client' LIMIT 1", [mb_strtolower(trim((string)$client['email']))]);
         }
         unset($client['portal_password_encrypted']);
         return $client;
