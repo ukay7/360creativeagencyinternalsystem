@@ -14,7 +14,7 @@
     var supportPackageId = Number((proposal && proposal.support_package_id) || 0);
     var recommendationRules = data.recommendation || {basic_max:7, medium_max:14, max_score:20, presets:{basic:0,medium:1,pro:2}};
     var membershipDuration = Number((proposal && proposal.membership_duration_months) || 3);
-    var membershipTermMode = [3,12,18].indexOf(membershipDuration) >= 0 ? String(membershipDuration) : 'custom';
+    var membershipTermMode = [3,6,12].indexOf(membershipDuration) >= 0 ? String(membershipDuration) : 'custom';
     var activeItems = [];
     var supportActiveItems = [];
     var originalItems = {};
