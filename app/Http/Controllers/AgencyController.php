@@ -35,7 +35,7 @@ final class AgencyController extends Controller
         $permissionMap = [
             'dashboard'=>'dashboard.access','leads'=>'leads.access','lead'=>'leads.access','pipeline'=>'pipeline.access','discovery'=>'discovery.access','clients'=>'clients.access','client'=>'clients.access','contracts'=>'contracts.access',
             'packages'=>'packages.access','services'=>'services.access','proposals'=>'proposals.access','projects'=>'projects.access','tasks'=>'tasks.access',
-            'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','task_file'=>'tasks.access','task_file_view'=>'tasks.access','calendar'=>'calendar.access','invoices'=>'invoices.access','invoice'=>'invoices.access','invoice_pdf'=>'invoices.access','team'=>'team.access','time'=>'time.access',
+            'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','task_file'=>'tasks.access','task_file_view'=>'tasks.access','calendar'=>'calendar.access','invoices'=>'invoices.access','invoice'=>'invoices.access','invoice_pdf'=>'invoices.access','invoice_adjustment_pdf'=>'invoices.access','team'=>'team.access','time'=>'time.access',
             'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access','change_password'=>null,
             'quote_studio'=>'proposals.access','saved_quotes'=>'proposals.access','quote_view'=>'proposals.access','quote_settings'=>'settings.access',
         ];
@@ -57,6 +57,9 @@ final class AgencyController extends Controller
         }
         if ($route === 'invoice_pdf') {
             return $this->laravelInvoicePdf((int) ($request->query('id') ?? $request->route('extra', 0)));
+        }
+        if ($route === 'invoice_adjustment_pdf') {
+            return $this->laravelInvoiceAdjustmentPdf((int) ($request->query('id') ?? $request->route('extra', 0)));
         }
 
         if (($this->auth->user()['role_slug'] ?? '') === 'client' && in_array($route, ['dashboard','projects','tasks'], true)) {
@@ -95,7 +98,7 @@ final class AgencyController extends Controller
             'content' => $this->laravelPage('entity-list', array_merge($this->contentPage($options), ['rows'=>$this->agency->content()]), $route),
             'media' => $this->laravelPage('media', ['title'=>'Media Library','rows'=>$this->agency->media(),'options'=>$options], $route),
             'calendar' => $this->calendarPage($request, $options, $route),
-            'invoices' => $this->laravelPage('invoices', ['title'=>'Invoices & Payments','rows'=>$this->agency->invoices($request->query()),'filters'=>$request->query(),'options'=>$options,'bankAccounts'=>$this->agency->bankAccounts(true),'invoiceProfile'=>$this->agency->invoiceProfile()], $route),
+            'invoices' => $this->laravelPage('invoices', ['title'=>'Invoices & Payments','rows'=>$this->agency->invoices($request->query()),'filters'=>$request->query(),'options'=>$options,'bankAccounts'=>$this->agency->bankAccounts(true),'invoiceProfile'=>$this->agency->invoiceProfile(),'summary'=>$this->agency->invoiceFinancialSummary()], $route),
             'invoice' => ($invoice=$this->agency->invoice((int)($request->query('id') ?? $request->route('extra',0))))
                 ? $this->laravelPage('invoice', ['title'=>$invoice['invoice_number'],'invoice'=>$invoice], $route)
                 : $this->laravelPage('error',['title'=>'Invoice not found','message'=>'The requested invoice does not exist.'],$route,404),
@@ -166,6 +169,7 @@ final class AgencyController extends Controller
                 'create_consultation'=>['discovery.access', fn()=>$this->agency->createConsultation($input), 'discovery', 'Discovery consultation saved to the relationship record.'],
                 'convert_lead'=>['leads.access', fn()=>$this->agency->convertLead((int)$input['lead_id']), 'clients', 'Lead converted into a client.'],
                 'create_client'=>['clients.access', fn()=>$this->agency->createClient($input), 'clients', 'Client created successfully.'],
+                'update_client_details'=>['clients.access', fn()=>$this->agency->updateClientDetails($input), 'client', 'Client and business details updated.'],
                 'save_client_portal_access'=>['clients.access', fn()=>$this->agency->saveClientPortalAccess($input), 'client', 'Client portal access saved securely.'],
                 'reset_client_portal_password'=>['clients.access', fn()=>$this->agency->resetClientPortalPassword($input), 'client', 'A new temporary client password has been issued.'],
                 'create_package'=>['packages.access', fn()=>$this->agency->createPackage($input), 'packages', 'Package, pricing, services, and limits saved.'],
@@ -190,6 +194,7 @@ final class AgencyController extends Controller
                 'upload_media'=>['media.access', $upload, 'media', 'Media uploaded securely.'],
                 'create_invoice'=>['invoices.access', fn()=>$this->agency->createInvoice($input), 'invoices', 'Invoice created and marked as sent.'],
                 'record_payment'=>['invoices.access', fn()=>$this->agency->recordPayment($input), 'invoices', 'Payment recorded and balance updated.'],
+                'create_invoice_adjustment'=>['invoices.access', fn()=>$this->agency->createInvoiceAdjustment($input), 'invoice', 'Invoice adjustment created with a downloadable document.'],
                 'save_invoice_profile'=>['settings.access', $invoiceProfileSave, 'settings', 'Invoice branding, address, terms, and signature updated.'],
                 'save_bank_account'=>['settings.access', fn()=>$this->agency->saveBankAccount($input), 'settings', 'Bank account details saved.'],
                 'create_employee'=>['team.access', fn()=>$this->agency->createEmployee($input), 'team', 'Employee created successfully.'],
@@ -227,13 +232,14 @@ final class AgencyController extends Controller
             if ($permission !== null && ! $this->auth->can($permission)) { throw new InvalidArgumentException('Your role cannot perform this action.'); }
             $result = $handler();
             $parameters = [];
-            if (in_array($action, ['add_note','update_health','assign_package','save_client_portal_access','reset_client_portal_password'], true)) { $parameters['id'] = (int) $input['client_id']; }
+            if (in_array($action, ['add_note','update_health','assign_package','save_client_portal_access','reset_client_portal_password','update_client_details'], true)) { $parameters['id'] = (int) $input['client_id']; }
             if (in_array($action, ['update_lead','add_lead_followup','update_lead_followup'], true)) { $parameters['id'] = (int) $input['lead_id']; }
             if ($action === 'convert_lead' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
             if ($action === 'move_opportunity' && is_int($result)) { $successRoute = 'client'; $parameters['id'] = $result; }
             if (in_array($action,['save_quote','duplicate_quote','record_quote_delivery'],true) && is_int($result)) { $parameters['id'] = $action==='record_quote_delivery' ? (int)$input['proposal_id'] : $result; }
             if ($action === 'onboard_quote' && is_int($result)) { $parameters['id'] = $result; }
             if ($action === 'create_invoice' && is_int($result)) { $successRoute='invoice'; $parameters['id']=$result; }
+            if ($action === 'create_invoice_adjustment') { $successRoute='invoice'; $parameters['id']=(int)$input['invoice_id']; }
             return redirect($listReturnUrl ?? agency_url($successRoute, $parameters))->with('success', $message);
         } catch (Throwable $exception) {
             report($exception);
@@ -363,6 +369,24 @@ final class AgencyController extends Controller
         return response($dompdf->output(), 200, [
             'Content-Type'=>'application/pdf',
             'Content-Disposition'=>'attachment; filename="'.$invoice['invoice_number'].'.pdf"',
+            'X-Content-Type-Options'=>'nosniff',
+        ]);
+    }
+
+    private function laravelInvoiceAdjustmentPdf(int $id): mixed
+    {
+        $adjustment = $this->agency->invoiceAdjustment($id);
+        if (! $adjustment) { abort(404); }
+        $options = new Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('chroot', [public_path(), storage_path('app/private/invoice-signatures')]);
+        $dompdf = new Dompdf($options);
+        $dompdf->loadHtml(view('agency.invoice-adjustment-pdf', ['adjustment'=>$adjustment])->render(), 'UTF-8');
+        $dompdf->setPaper('A4');
+        $dompdf->render();
+        return response($dompdf->output(), 200, [
+            'Content-Type'=>'application/pdf',
+            'Content-Disposition'=>'attachment; filename="'.$adjustment['adjustment_number'].'.pdf"',
             'X-Content-Type-Options'=>'nosniff',
         ]);
     }
@@ -594,7 +618,7 @@ final class AgencyController extends Controller
 
     private function safeRoute(string $route): string
     {
-        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','task_file','task_file_view','visits','content','media','calendar','invoices','invoice','invoice_pdf','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_settings','change_password'];
+        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','task_file','task_file_view','visits','content','media','calendar','invoices','invoice','invoice_pdf','invoice_adjustment_pdf','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_settings','change_password'];
         return in_array($route,$allowed,true) ? $route : 'dashboard';
     }
 

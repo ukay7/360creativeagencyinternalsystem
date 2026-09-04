@@ -1432,8 +1432,76 @@ class AgencySystemTest extends TestCase
         $this->assertSame(2,DB::table('invoice_items')->where('invoice_id',$invoice->id)->count());
         $this->get('/invoice?id='.$invoice->id)->assertOk()
             ->assertSee('Design approved')->assertSee('QA Bank')->assertSee('Production assets')
-            ->assertSee('Number (OCN/BIN)')->assertSee('OCN-BIN-QA-2026')->assertSee('Download PDF');
+            ->assertSee('Number (OCN/BIN)')->assertSee('OCN-BIN-QA-2026')->assertSee('Invoice PDF');
         $this->get('/invoices')->assertOk()->assertSee('Number (OCN/BIN)')->assertSee('OCN-BIN-QA-2026');
         $this->get('/invoice_pdf?id='.$invoice->id)->assertOk()->assertHeader('content-type','application/pdf');
+    }
+
+    public function test_client_details_can_be_edited_from_the_client_listing_workflow(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $client = DB::table('clients')->orderBy('id')->first();
+        $sizeId = (int)DB::table('business_sizes')->where('active',1)->orderBy('id')->value('id');
+        $managerId = (int)DB::table('employees')->where('status','active')->orderBy('id')->value('id');
+        $portalEmail = $client->portal_user_id ? DB::table('users')->where('id',$client->portal_user_id)->value('email') : null;
+
+        $this->get('/clients')->assertOk()->assertSee('Edit')->assertSee('View');
+        $this->post('/client?id='.$client->id, [
+            'action'=>'update_client_details','client_id'=>$client->id,
+            'contact_name'=>'Updated Client Contact','email'=>'updated-client@example.test','phone'=>'+1 416 555 0199',
+            'business_name'=>'Updated Client Business','legal_name'=>'Updated Client Business Inc.','industry'=>'Professional Services',
+            'website'=>'https://updated-client.example.test','employee_count'=>24,'years_in_business'=>7,
+            'business_size_id'=>$sizeId,'account_manager_id'=>$managerId,'tax_number'=>'REG-CLIENT-2026',
+            'joined_at'=>'2026-09-01','status'=>'active','address'=>'100 King Street West','city'=>'Toronto','state'=>'Ontario','postal_code'=>'M5X 1A9',
+        ])->assertRedirectContains('/client?id='.$client->id)->assertSessionHas('success');
+
+        $this->assertDatabaseHas('clients', ['id'=>$client->id,'name'=>'Updated Client Contact','email'=>'updated-client@example.test','phone'=>'+1 416 555 0199','account_manager_id'=>$managerId,'joined_at'=>'2026-09-01']);
+        $this->assertDatabaseHas('businesses', ['id'=>$client->business_id,'name'=>'Updated Client Business','legal_name'=>'Updated Client Business Inc.','tax_number'=>'REG-CLIENT-2026']);
+        $this->assertDatabaseHas('contacts', ['client_id'=>$client->id,'name'=>'Updated Client Contact','email'=>'updated-client@example.test','primary_contact'=>1]);
+        $this->assertDatabaseHas('business_locations', ['business_id'=>$client->business_id,'address'=>'100 King Street West','city'=>'Toronto','state'=>'Ontario','postal_code'=>'M5X 1A9','primary_location'=>1]);
+        if ($client->portal_user_id) { $this->assertSame($portalEmail, DB::table('users')->where('id',$client->portal_user_id)->value('email')); }
+        $this->get('/client?id='.$client->id.'&edit=1')->assertOk()->assertSee('Edit client and business details')->assertSee('Updated Client Contact')->assertSee('Contact changes do not alter the separate client portal login.');
+    }
+
+    public function test_invoice_partial_refunds_and_cancellations_generate_audited_pdf_documents(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $client = DB::table('clients')->where('status','active')->orderBy('id')->first();
+
+        $this->post('/invoices', [
+            'action'=>'create_invoice','client_id'=>$client->id,'due_date'=>'2026-09-30','status'=>'sent','currency'=>'CAD',
+            'item_description'=>['Retainer milestone'],'item_quantity'=>[1],'item_unit_price'=>[1000],'discount'=>0,'tax_percent'=>13,
+        ])->assertSessionHas('success');
+        $creditInvoice = DB::table('invoices')->latest('id')->first();
+        $this->post('/invoice?id='.$creditInvoice->id, [
+            'action'=>'create_invoice_adjustment','invoice_id'=>$creditInvoice->id,'adjustment_type'=>'partial_refund',
+            'adjustment_date'=>'2026-09-10','amount'=>100,'tax_percent'=>13,'reason'=>'Overcharge correction','method'=>'Bank transfer','reference'=>'RF-QA-100',
+        ])->assertRedirectContains('/invoice?id='.$creditInvoice->id)->assertSessionHas('success');
+        $credit = DB::table('invoice_adjustments')->where('invoice_id',$creditInvoice->id)->first();
+        $this->assertNotNull($credit);
+        $this->assertSame('partial_refund',$credit->type);
+        $this->assertSame(113.0,(float)$credit->total);
+        $this->assertStringStartsWith('CN-', $credit->adjustment_number);
+        $this->assertDatabaseHas('invoices', ['id'=>$creditInvoice->id,'status'=>'partially_refunded']);
+        $this->get('/invoice?id='.$creditInvoice->id)->assertOk()->assertSeeText('Credit notes & cancellation documents')->assertSee('Overcharge correction')->assertSee('Net invoice value');
+        $this->get('/invoice_adjustment_pdf?id='.$credit->id)->assertOk()->assertHeader('content-type','application/pdf');
+
+        $this->post('/invoices', [
+            'action'=>'create_invoice','client_id'=>$client->id,'due_date'=>'2026-09-30','status'=>'sent','currency'=>'CAD',
+            'item_description'=>['Cancelled milestone'],'item_quantity'=>[1],'item_unit_price'=>[500],'discount'=>0,'tax_percent'=>0,
+        ])->assertSessionHas('success');
+        $cancelledInvoice = DB::table('invoices')->latest('id')->first();
+        $this->post('/invoice?id='.$cancelledInvoice->id, [
+            'action'=>'create_invoice_adjustment','invoice_id'=>$cancelledInvoice->id,'adjustment_type'=>'cancellation',
+            'adjustment_date'=>'2026-09-11','reason'=>'Project cancelled before delivery','method'=>'Account credit','reference'=>'CXL-QA-500',
+        ])->assertRedirectContains('/invoice?id='.$cancelledInvoice->id)->assertSessionHas('success');
+        $cancellation = DB::table('invoice_adjustments')->where('invoice_id',$cancelledInvoice->id)->first();
+        $this->assertSame('cancellation',$cancellation->type);
+        $this->assertSame(500.0,(float)$cancellation->total);
+        $this->assertStringStartsWith('CXL-', $cancellation->adjustment_number);
+        $this->assertDatabaseHas('invoices', ['id'=>$cancelledInvoice->id,'status'=>'cancelled']);
+        $this->get('/invoice_adjustment_pdf?id='.$cancellation->id)->assertOk()->assertHeader('content-type','application/pdf');
+        $this->get('/invoices')->assertOk()->assertSee('Gross issued')->assertSee('Partial refunds')->assertSee('Invoice adjustment report')->assertSee($cancellation->adjustment_number);
+        $this->get('/reports')->assertOk()->assertSeeText('Invoice reversals & net billing')->assertSee('Net invoiced');
     }
 }

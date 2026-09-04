@@ -198,7 +198,7 @@ final class AgencyService
 
     public function clients(array $filters = []): array
     {
-        $base = "SELECT c.*, b.name AS business_name, b.industry,
+        $base = "SELECT c.*, b.name AS business_name, b.legal_name, b.industry, b.website, b.employee_count, b.years_in_business, b.tax_number, b.business_size_id,
             COALESCE(
                 (SELECT NULLIF(s.monthly_price,0) FROM subscriptions s WHERE s.client_id=c.id AND s.status='active' ORDER BY s.id DESC LIMIT 1),
                 (SELECT NULLIF(q.membership_monthly_price,0) FROM proposals q WHERE q.client_id=c.id AND q.builder_version IS NOT NULL AND q.status='accepted' ORDER BY COALESCE(q.updated_at,q.created_at) DESC,q.id DESC LIMIT 1),
@@ -234,10 +234,11 @@ final class AgencyService
 
     public function client(int $id): ?array
     {
-        $client = $this->db->first("SELECT c.*, b.name AS business_name, b.industry, b.website, b.employee_count, bs.name AS business_size, e.name AS account_manager, s.id AS subscription_id, s.monthly_price, s.renewal_date, p.name AS package_name, p.id AS package_id, pu.name AS portal_user_name,pu.email AS portal_user_email,pu.status AS portal_user_status,pu.last_login_at AS portal_last_login_at FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN business_sizes bs ON bs.id=b.business_size_id LEFT JOIN employees e ON e.id=c.account_manager_id LEFT JOIN subscriptions s ON s.client_id=c.id AND s.status='active' LEFT JOIN packages p ON p.id=s.package_id LEFT JOIN users pu ON pu.id=c.portal_user_id WHERE c.id=?", [$id]);
+        $client = $this->db->first("SELECT c.*, b.name AS business_name, b.legal_name, b.industry, b.website, b.employee_count, b.years_in_business, b.tax_number, b.business_size_id, bs.name AS business_size, e.name AS account_manager, s.id AS subscription_id, s.monthly_price, s.renewal_date, p.name AS package_name, p.id AS package_id, pu.name AS portal_user_name,pu.email AS portal_user_email,pu.status AS portal_user_status,pu.last_login_at AS portal_last_login_at FROM clients c JOIN businesses b ON b.id=c.business_id LEFT JOIN business_sizes bs ON bs.id=b.business_size_id LEFT JOIN employees e ON e.id=c.account_manager_id LEFT JOIN subscriptions s ON s.client_id=c.id AND s.status='active' LEFT JOIN packages p ON p.id=s.package_id LEFT JOIN users pu ON pu.id=c.portal_user_id WHERE c.id=?", [$id]);
         if (!$client) {
             return null;
         }
+        $client['location'] = $this->db->first('SELECT * FROM business_locations WHERE business_id=? ORDER BY primary_location DESC,id LIMIT 1', [(int)$client['business_id']]) ?: ['address'=>'','city'=>'','state'=>'','postal_code'=>''];
         $client['contacts'] = $this->db->all('SELECT * FROM contacts WHERE client_id=? ORDER BY primary_contact DESC', [$id]);
         $client['projects'] = $this->db->all('SELECT * FROM projects WHERE client_id=? ORDER BY created_at DESC', [$id]);
         $taskScope = '';
@@ -251,7 +252,7 @@ final class AgencyService
             }
         }
         $client['tasks'] = $this->db->all("SELECT t.*, COALESCE((SELECT GROUP_CONCAT(ea.name ORDER BY ea.name SEPARATOR ', ') FROM project_task_assignees pta JOIN employees ea ON ea.id=pta.employee_id WHERE pta.task_id=t.id),e.name) AS assignee FROM project_tasks t LEFT JOIN employees e ON e.id=t.assigned_employee_id WHERE t.client_id=?{$taskScope} ORDER BY t.due_date", $taskParameters);
-        $client['invoices'] = $this->db->all('SELECT * FROM invoices WHERE client_id=? ORDER BY issue_date DESC', [$id]);
+        $client['invoices'] = $this->db->all("SELECT i.*,COALESCE(ia.adjustment_total,0) AS adjustment_total,CASE WHEN i.total-COALESCE(ia.adjustment_total,0)>0 THEN i.total-COALESCE(ia.adjustment_total,0) ELSE 0 END AS adjusted_total,CASE WHEN i.total-COALESCE(ia.adjustment_total,0)-i.amount_paid>0 THEN i.total-COALESCE(ia.adjustment_total,0)-i.amount_paid ELSE 0 END AS amount_due FROM invoices i LEFT JOIN (SELECT invoice_id,SUM(total) AS adjustment_total FROM invoice_adjustments GROUP BY invoice_id) ia ON ia.invoice_id=i.id WHERE i.client_id=? ORDER BY i.issue_date DESC", [$id]);
         $client['visits'] = $this->db->all('SELECT v.*, e.name AS assignee FROM content_visits v LEFT JOIN employees e ON e.id=v.assigned_employee_id WHERE v.client_id=? ORDER BY visit_date DESC', [$id]);
         $client['content'] = $this->db->all('SELECT * FROM content_items WHERE client_id=? ORDER BY scheduled_at DESC', [$id]);
         $client['activities'] = $this->db->all('SELECT a.*, u.name AS user_name FROM activities a LEFT JOIN users u ON u.id=a.user_id WHERE a.client_id=? ORDER BY a.created_at DESC LIMIT 30', [$id]);
@@ -426,22 +427,72 @@ final class AgencyService
         $parameters = [];
         if (($clientId = $this->nullableInt($filters['client_id'] ?? null))) { $where[]='i.client_id=?'; $parameters[]=$clientId; }
         if (($projectId = $this->nullableInt($filters['project_id'] ?? null))) { $where[]='i.project_id=?'; $parameters[]=$projectId; }
-        if (($status = trim((string)($filters['status'] ?? ''))) !== '' && in_array($status, ['draft','sent','partially_paid','paid','overdue','cancelled'], true)) { $where[]='i.status=?'; $parameters[]=$status; }
+        if (($status = trim((string)($filters['status'] ?? ''))) !== '' && in_array($status, ['draft','sent','partially_paid','paid','overdue','partially_refunded','refunded','cancelled'], true)) { $where[]='i.status=?'; $parameters[]=$status; }
         if (($from = trim((string)($filters['from'] ?? ''))) !== '') { $where[]='i.issue_date>=?'; $parameters[]=$from; }
         if (($to = trim((string)($filters['to'] ?? ''))) !== '') { $where[]='i.issue_date<=?'; $parameters[]=$to; }
         $whereSql = $where ? ' WHERE '.implode(' AND ', $where) : '';
-        return $this->db->all("SELECT i.*,b.name AS business_name,c.name AS contact_name,c.email AS client_email,p.name AS project_name,ba.account_name AS bank_account_name,ba.bank_name,(i.total-i.amount_paid) AS amount_due,(SELECT COUNT(*) FROM invoice_items ii WHERE ii.invoice_id=i.id) AS item_count,(SELECT COUNT(*) FROM payments py WHERE py.invoice_id=i.id) AS payment_count FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN bank_accounts ba ON ba.id=i.bank_account_id{$whereSql} ORDER BY i.issue_date DESC,i.id DESC", $parameters);
+        return $this->db->all("SELECT i.*,b.name AS business_name,c.name AS contact_name,c.email AS client_email,p.name AS project_name,ba.account_name AS bank_account_name,ba.bank_name,COALESCE(ia.adjustment_total,0) AS adjustment_total,COALESCE(ia.adjustment_count,0) AS adjustment_count,CASE WHEN i.total-COALESCE(ia.adjustment_total,0)>0 THEN i.total-COALESCE(ia.adjustment_total,0) ELSE 0 END AS adjusted_total,CASE WHEN i.total-COALESCE(ia.adjustment_total,0)-i.amount_paid>0 THEN i.total-COALESCE(ia.adjustment_total,0)-i.amount_paid ELSE 0 END AS amount_due,(SELECT COUNT(*) FROM invoice_items ii WHERE ii.invoice_id=i.id) AS item_count,(SELECT COUNT(*) FROM payments py WHERE py.invoice_id=i.id) AS payment_count FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN bank_accounts ba ON ba.id=i.bank_account_id LEFT JOIN (SELECT invoice_id,SUM(total) AS adjustment_total,COUNT(*) AS adjustment_count FROM invoice_adjustments GROUP BY invoice_id) ia ON ia.invoice_id=i.id{$whereSql} ORDER BY i.issue_date DESC,i.id DESC", $parameters);
     }
 
     public function invoice(int $id): ?array
     {
-        $invoice = $this->db->first("SELECT i.*,b.name AS business_name,b.industry,c.name AS contact_name,c.email AS client_email,c.phone AS client_phone,p.name AS project_name,pk.name AS package_name,(i.total-i.amount_paid) AS amount_due FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN packages pk ON pk.id=i.package_id WHERE i.id=?", [$id]);
+        $invoice = $this->db->first("SELECT i.*,b.name AS business_name,b.industry,c.name AS contact_name,c.email AS client_email,c.phone AS client_phone,p.name AS project_name,pk.name AS package_name,COALESCE(ia.adjustment_total,0) AS adjustment_total,COALESCE(ia.adjustment_count,0) AS adjustment_count,CASE WHEN i.total-COALESCE(ia.adjustment_total,0)>0 THEN i.total-COALESCE(ia.adjustment_total,0) ELSE 0 END AS adjusted_total,CASE WHEN i.total-COALESCE(ia.adjustment_total,0)-i.amount_paid>0 THEN i.total-COALESCE(ia.adjustment_total,0)-i.amount_paid ELSE 0 END AS amount_due FROM invoices i JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN packages pk ON pk.id=i.package_id LEFT JOIN (SELECT invoice_id,SUM(total) AS adjustment_total,COUNT(*) AS adjustment_count FROM invoice_adjustments GROUP BY invoice_id) ia ON ia.invoice_id=i.id WHERE i.id=?", [$id]);
         if (! $invoice) { return null; }
         $invoice['items'] = $this->db->all('SELECT * FROM invoice_items WHERE invoice_id=? ORDER BY id', [$id]);
         $invoice['payments'] = $this->db->all('SELECT p.*,u.name AS recorded_by_name FROM payments p LEFT JOIN users u ON u.id=p.recorded_by WHERE p.invoice_id=? ORDER BY p.payment_date DESC,p.id DESC', [$id]);
+        $invoice['adjustments'] = $this->db->all('SELECT ia.*,u.name AS created_by_name FROM invoice_adjustments ia LEFT JOIN users u ON u.id=ia.created_by WHERE ia.invoice_id=? ORDER BY ia.adjustment_date DESC,ia.id DESC', [$id]);
         $invoice['bank_account'] = ! empty($invoice['bank_account_id']) ? $this->db->first('SELECT * FROM bank_accounts WHERE id=?', [(int)$invoice['bank_account_id']]) : null;
         $invoice['profile'] = $this->invoiceProfile();
         return $invoice;
+    }
+
+    public function invoiceAdjustment(int $id): ?array
+    {
+        $adjustment = $this->db->first("SELECT ia.*,i.invoice_number,i.issue_date,i.due_date,i.currency,i.total AS invoice_total,i.amount_paid,b.name AS business_name,c.name AS contact_name,c.email AS client_email,c.phone AS client_phone,p.name AS project_name,u.name AS created_by_name FROM invoice_adjustments ia JOIN invoices i ON i.id=ia.invoice_id JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=i.project_id LEFT JOIN users u ON u.id=ia.created_by WHERE ia.id=?", [$id]);
+        if (! $adjustment) { return null; }
+        $adjustment['profile'] = $this->invoiceProfile();
+        return $adjustment;
+    }
+
+    public function invoiceFinancialSummary(): array
+    {
+        $invoices = $this->db->all('SELECT id,total,amount_paid,status FROM invoices');
+        $adjustments = $this->db->all('SELECT invoice_id,type,total FROM invoice_adjustments');
+        $adjustedByInvoice = [];
+        $cancelled = 0.0;
+        $refunded = 0.0;
+        $cancellationCount = 0;
+        $refundCount = 0;
+        foreach ($adjustments as $adjustment) {
+            $invoiceId = (int)$adjustment['invoice_id'];
+            $adjustedByInvoice[$invoiceId] = ($adjustedByInvoice[$invoiceId] ?? 0) + (float)$adjustment['total'];
+            if ($adjustment['type'] === 'cancellation') { $cancelled += (float)$adjustment['total']; $cancellationCount++; }
+            else { $refunded += (float)$adjustment['total']; $refundCount++; }
+        }
+        $gross = 0.0;
+        $collected = 0.0;
+        $outstanding = 0.0;
+        $issuedCount = 0;
+        foreach ($invoices as $invoice) {
+            if ($invoice['status'] === 'draft') { continue; }
+            $gross += (float)$invoice['total'];
+            $collected += (float)$invoice['amount_paid'];
+            $issuedCount++;
+            $outstanding += max(0, (float)$invoice['total'] - (float)($adjustedByInvoice[(int)$invoice['id']] ?? 0) - (float)$invoice['amount_paid']);
+        }
+        return [
+            'issued_count'=>$issuedCount,
+            'gross_issued'=>$gross,
+            'cancelled_total'=>$cancelled,
+            'cancellation_count'=>$cancellationCount,
+            'refunded_total'=>$refunded,
+            'refund_count'=>$refundCount,
+            'adjustment_total'=>$cancelled+$refunded,
+            'net_invoiced'=>max(0, $gross-$cancelled-$refunded),
+            'collected'=>$collected,
+            'outstanding'=>$outstanding,
+            'recent_adjustments'=>$this->db->all("SELECT ia.*,i.invoice_number,b.name AS business_name FROM invoice_adjustments ia JOIN invoices i ON i.id=ia.invoice_id JOIN clients c ON c.id=i.client_id JOIN businesses b ON b.id=c.business_id ORDER BY ia.adjustment_date DESC,ia.id DESC LIMIT 10"),
+        ];
     }
 
     public function invoiceProfile(): array
@@ -601,6 +652,7 @@ final class AgencyService
             ],
             'quote_statuses' => $isAdmin ? $this->db->all("SELECT status,COUNT(*) AS quote_count,COALESCE(SUM(total),0) AS quote_value FROM proposals WHERE builder_version IS NOT NULL GROUP BY status ORDER BY CASE status WHEN 'draft' THEN 1 WHEN 'sent' THEN 2 WHEN 'accepted' THEN 3 ELSE 4 END") : [],
             'packages' => $isAdmin ? $this->db->all("SELECT COALESCE(p.name,q.selected_tier,'Custom') AS package_name,COUNT(q.id) AS quote_count,SUM(CASE WHEN q.status='accepted' THEN 1 ELSE 0 END) AS accepted_count,COALESCE(SUM(CASE WHEN q.status='accepted' THEN q.total ELSE 0 END),0) AS accepted_value,COALESCE(SUM(CASE WHEN q.status='accepted' THEN q.membership_monthly_price ELSE 0 END),0) AS monthly_recurring FROM proposals q LEFT JOIN packages p ON p.id=q.package_id WHERE q.builder_version IS NOT NULL GROUP BY COALESCE(p.name,q.selected_tier,'Custom') ORDER BY accepted_value DESC,quote_count DESC") : [],
+            'invoice_summary' => $isAdmin ? $this->invoiceFinancialSummary() : null,
             'clients' => $clients,
             'projects' => $this->db->all("SELECT p.id,p.name AS project_name,p.status,b.name AS business_name,COUNT(t.id) AS task_count,SUM(CASE WHEN t.status='completed' THEN 1 ELSE 0 END) AS completed_tasks,SUM(CASE WHEN t.status!='completed' THEN 1 ELSE 0 END) AS open_tasks FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN project_tasks t ON t.project_id=p.id{$taskScope} GROUP BY p.id,p.name,p.status,b.name ORDER BY CASE WHEN p.status IN ('completed','cancelled') THEN 1 ELSE 0 END,p.id DESC", $taskParameters),
             'task_statuses' => $this->db->all("SELECT t.status,COUNT(*) AS task_count FROM project_tasks t WHERE 1=1{$taskScope} GROUP BY t.status ORDER BY CASE t.status WHEN 'todo' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'review' THEN 3 WHEN 'completed' THEN 4 ELSE 5 END", $taskParameters),
@@ -713,6 +765,7 @@ final class AgencyService
     {
         return [
             'employees' => $this->db->all("SELECT id, name FROM employees WHERE status='active' ORDER BY name"),
+            'business_sizes' => $this->db->all("SELECT id, name FROM business_sizes WHERE active=1 ORDER BY min_employees,id"),
             'clients' => $this->db->all("SELECT c.id, b.name FROM clients c JOIN businesses b ON b.id=c.business_id WHERE c.status='active' ORDER BY b.name"),
             'packages' => $this->db->all("SELECT p.id, p.name, COALESCE(pp.monthly_fee,pp.base_price,0) AS price FROM packages p LEFT JOIN package_pricing pp ON pp.package_id=p.id AND pp.effective_to IS NULL WHERE p.active=1 ORDER BY p.name"),
             'services' => $this->db->all("SELECT id, name, cost_estimate, estimated_hours FROM services WHERE active=1 ORDER BY name"),
@@ -997,6 +1050,71 @@ final class AgencyService
             $this->audit('created','client',$clientId,null,$input);
             return $clientId;
         });
+    }
+
+    public function updateClientDetails(array $input): void
+    {
+        $this->required($input, ['client_id','business_name','contact_name','email','joined_at','status']);
+        $clientId = (int)$input['client_id'];
+        $client = $this->db->first('SELECT * FROM clients WHERE id=?', [$clientId]);
+        if (! $client) { throw new InvalidArgumentException('The client profile could not be found.'); }
+        if (! filter_var((string)$input['email'], FILTER_VALIDATE_EMAIL)) { throw new InvalidArgumentException('Enter a valid client email address.'); }
+        if (! in_array((string)$input['status'], ['active','inactive'], true)) { throw new InvalidArgumentException('Select a valid client status.'); }
+        $joinedAt = (string)$input['joined_at'];
+        $dateParts = array_map('intval', explode('-', $joinedAt));
+        if (count($dateParts) !== 3 || ! checkdate($dateParts[1], $dateParts[2], $dateParts[0])) { throw new InvalidArgumentException('Enter a valid onboarding date.'); }
+        $accountManagerId = $this->nullableInt($input['account_manager_id'] ?? null);
+        if ($accountManagerId && ! $this->db->first("SELECT id FROM employees WHERE id=? AND status='active'", [$accountManagerId])) { throw new InvalidArgumentException('Select an active account manager.'); }
+        $businessSizeId = $this->nullableInt($input['business_size_id'] ?? null);
+        if ($businessSizeId && ! $this->db->first("SELECT id FROM business_sizes WHERE id=? AND active=1", [$businessSizeId])) { throw new InvalidArgumentException('Select a valid business size.'); }
+        $business = $this->db->first('SELECT * FROM businesses WHERE id=?', [(int)$client['business_id']]);
+        if (! $business) { throw new InvalidArgumentException('The client business record could not be found.'); }
+        $primaryContact = $this->db->first('SELECT * FROM contacts WHERE client_id=? ORDER BY primary_contact DESC,id LIMIT 1', [$clientId]);
+        $location = $this->db->first('SELECT * FROM business_locations WHERE business_id=? ORDER BY primary_location DESC,id LIMIT 1', [(int)$client['business_id']]);
+        $clientValues = [
+            'account_manager_id'=>$accountManagerId,
+            'name'=>trim((string)$input['contact_name']),
+            'email'=>trim((string)$input['email']),
+            'phone'=>trim((string)($input['phone'] ?? '')) ?: null,
+            'status'=>(string)$input['status'],
+            'joined_at'=>$joinedAt,
+        ];
+        $businessValues = [
+            'business_size_id'=>$businessSizeId,
+            'name'=>trim((string)$input['business_name']),
+            'legal_name'=>trim((string)($input['legal_name'] ?? '')) ?: null,
+            'industry'=>trim((string)($input['industry'] ?? '')) ?: null,
+            'website'=>trim((string)($input['website'] ?? '')) ?: null,
+            'employee_count'=>$this->nullableInt($input['employee_count'] ?? null),
+            'years_in_business'=>$this->nullableInt($input['years_in_business'] ?? null),
+            'tax_number'=>trim((string)($input['tax_number'] ?? '')) ?: null,
+        ];
+        $locationValues = [
+            'name'=>'Primary office',
+            'address'=>trim((string)($input['address'] ?? '')),
+            'city'=>trim((string)($input['city'] ?? '')) ?: null,
+            'state'=>trim((string)($input['state'] ?? '')) ?: null,
+            'postal_code'=>trim((string)($input['postal_code'] ?? '')) ?: null,
+            'primary_location'=>1,
+        ];
+        $hasLocation = implode('', array_map(static fn(mixed $value): string => trim((string)$value), array_slice($locationValues, 1, 4))) !== '';
+        $before = ['client'=>$client,'business'=>$business,'primary_contact'=>$primaryContact,'location'=>$location];
+        $this->db->transaction(function () use ($clientId, $client, $clientValues, $businessValues, $primaryContact, $location, $locationValues, $hasLocation): void {
+            $this->db->update('clients', $clientId, $clientValues);
+            $this->db->update('businesses', (int)$client['business_id'], $businessValues);
+            $contactValues = ['name'=>$clientValues['name'],'title'=>'Primary contact','email'=>$clientValues['email'],'phone'=>$clientValues['phone'],'primary_contact'=>1];
+            if ($primaryContact) { $this->db->update('contacts', (int)$primaryContact['id'], $contactValues); }
+            else { $this->db->insert('contacts', ['client_id'=>$clientId]+$contactValues); }
+            if ($hasLocation) {
+                if ($location) { $this->db->update('business_locations', (int)$location['id'], $locationValues); }
+                else { $this->db->insert('business_locations', ['business_id'=>(int)$client['business_id']]+$locationValues); }
+            } elseif ($location) {
+                $this->db->execute('DELETE FROM business_locations WHERE id=?', [(int)$location['id']]);
+            }
+        });
+        $after = ['client'=>$clientValues,'business'=>$businessValues,'location'=>$hasLocation?$locationValues:null];
+        $this->activity($clientId, 'client.details_updated', 'Client and business details were updated.', 'client', $clientId);
+        $this->audit('updated', 'client', $clientId, $before, $after);
     }
 
     public function createPackage(array $input): int
@@ -1540,6 +1658,63 @@ final class AgencyService
         });
     }
 
+    public function createInvoiceAdjustment(array $input): int
+    {
+        $this->required($input, ['invoice_id','adjustment_type','adjustment_date','reason']);
+        $invoiceId = (int)$input['invoice_id'];
+        $invoice = $this->db->first('SELECT * FROM invoices WHERE id=?', [$invoiceId]);
+        if (! $invoice) { throw new InvalidArgumentException('The invoice could not be found.'); }
+        if ($invoice['status'] === 'draft') { throw new InvalidArgumentException('Issue the draft invoice before creating a cancellation or credit note.'); }
+        if (in_array($invoice['status'], ['cancelled','refunded'], true)) { throw new InvalidArgumentException('This invoice has already been fully reversed.'); }
+        $type = (string)$input['adjustment_type'];
+        if (! in_array($type, ['partial_refund','cancellation'], true)) { throw new InvalidArgumentException('Select a valid invoice adjustment.'); }
+        $dateParts = array_map('intval', explode('-', (string)$input['adjustment_date']));
+        if (count($dateParts) !== 3 || ! checkdate($dateParts[1], $dateParts[2], $dateParts[0])) { throw new InvalidArgumentException('Enter a valid adjustment date.'); }
+        $existingTotal = (float)$this->db->scalar('SELECT COALESCE(SUM(total),0) FROM invoice_adjustments WHERE invoice_id=?', [$invoiceId]);
+        if ($type === 'cancellation' && $existingTotal > 0) { throw new InvalidArgumentException('An invoice with existing credit notes cannot be fully cancelled. Credit the remaining value instead.'); }
+        if ($type === 'cancellation') {
+            $subtotal = max(0, (float)$invoice['subtotal']-(float)$invoice['discount']);
+            $tax = (float)$invoice['tax'];
+            $total = (float)$invoice['total'];
+        } else {
+            $subtotal = round($this->nonNegative($input['amount'] ?? 0), 2);
+            if ($subtotal <= 0) { throw new InvalidArgumentException('The partial refund amount must be greater than zero.'); }
+            $taxPercent = min(100, $this->nonNegative($input['tax_percent'] ?? 0));
+            $tax = round($subtotal*$taxPercent/100, 2);
+            $total = round($subtotal+$tax, 2);
+            $remaining = max(0, (float)$invoice['total']-$existingTotal);
+            if ($total > $remaining+0.001) { throw new InvalidArgumentException('The credit note cannot exceed the invoice value remaining after earlier adjustments.'); }
+        }
+        $reason = trim((string)$input['reason']);
+        if ($reason === '') { throw new InvalidArgumentException('Explain why this invoice is being adjusted.'); }
+        return $this->db->transaction(function () use ($input, $invoice, $invoiceId, $type, $subtotal, $tax, $total, $existingTotal, $reason): int {
+            $sequence = (int)$this->db->scalar('SELECT COALESCE(MAX(id),0)+1001 FROM invoice_adjustments');
+            $prefix = $type === 'cancellation' ? 'CXL' : 'CN';
+            $number = $prefix.'-'.date('Y').'-'.str_pad((string)$sequence, 4, '0', STR_PAD_LEFT);
+            $id = $this->db->insert('invoice_adjustments', [
+                'invoice_id'=>$invoiceId,
+                'adjustment_number'=>$number,
+                'type'=>$type,
+                'adjustment_date'=>(string)$input['adjustment_date'],
+                'subtotal'=>$subtotal,
+                'tax'=>$tax,
+                'total'=>$total,
+                'reason'=>$reason,
+                'method'=>trim((string)($input['method'] ?? '')) ?: null,
+                'reference'=>trim((string)($input['reference'] ?? '')) ?: null,
+                'created_by'=>$this->auth->user()['id'] ?? null,
+                'created_at'=>date('c'),
+            ]);
+            $newAdjustedTotal = $existingTotal+$total;
+            $status = $type === 'cancellation' ? 'cancelled' : ($newAdjustedTotal >= (float)$invoice['total']-0.001 ? 'refunded' : 'partially_refunded');
+            $this->db->execute('UPDATE invoices SET status=? WHERE id=?', [$status,$invoiceId]);
+            $label = $type === 'cancellation' ? 'cancelled' : 'credited';
+            $this->activity((int)$invoice['client_id'], 'invoice.'.$label, 'Invoice '.$invoice['invoice_number'].' '.$label.' by '.money($total).' under '.$number.'.', 'invoice', $invoiceId);
+            $this->audit($label, 'invoice', $invoiceId, $invoice, ['status'=>$status,'adjustment_id'=>$id,'adjustment_number'=>$number,'adjustment_total'=>$total,'reason'=>$reason]);
+            return $id;
+        });
+    }
+
     public function createProposal(array $input): int
     {
         $this->required($input, ['title','description','amount','valid_until']);
@@ -1742,13 +1917,15 @@ final class AgencyService
         $this->required($input, ['invoice_id','amount','payment_date','method']);
         $invoice = $this->db->first('SELECT * FROM invoices WHERE id=?', [(int)$input['invoice_id']]);
         $amount = $this->nonNegative($input['amount']);
-        if (!$invoice || $amount <= 0 || $amount > ((float)$invoice['total']-(float)$invoice['amount_paid']) + 0.001) {
+        $adjusted = $invoice ? (float)$this->db->scalar('SELECT COALESCE(SUM(total),0) FROM invoice_adjustments WHERE invoice_id=?', [(int)$invoice['id']]) : 0;
+        $available = $invoice ? max(0, (float)$invoice['total']-$adjusted-(float)$invoice['amount_paid']) : 0;
+        if (!$invoice || in_array($invoice['status'], ['cancelled','refunded'], true) || $amount <= 0 || $amount > $available + 0.001) {
             throw new InvalidArgumentException('Payment must be positive and cannot exceed the outstanding balance.');
         }
-        $this->db->transaction(function () use ($input, $invoice, $amount): void {
+        $this->db->transaction(function () use ($input, $invoice, $amount, $adjusted): void {
             $this->db->insert('payments', ['invoice_id'=>$invoice['id'],'amount'=>$amount,'payment_date'=>$input['payment_date'],'method'=>$input['method'],'reference'=>trim($input['reference'] ?? ''),'notes'=>trim($input['notes'] ?? ''),'recorded_by'=>$this->auth->user()['id'],'created_at'=>date('c')]);
             $paid = (float)$invoice['amount_paid']+$amount;
-            $status = $paid >= (float)$invoice['total'] ? 'paid' : 'partially_paid';
+            $status = $paid >= ((float)$invoice['total']-$adjusted)-0.001 ? 'paid' : 'partially_paid';
             $this->db->execute('UPDATE invoices SET amount_paid=?, status=? WHERE id=?', [$paid,$status,$invoice['id']]);
             $this->activity((int)$invoice['client_id'],'payment.received','Payment of '.money($amount).' received for '.$invoice['invoice_number'].'.','invoice',(int)$invoice['id']);
             $this->audit('payment_recorded','invoice',(int)$invoice['id'],$invoice,['amount_paid'=>$paid,'status'=>$status]);
