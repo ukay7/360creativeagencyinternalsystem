@@ -421,7 +421,8 @@ class AgencySystemTest extends TestCase
 
         $item=DB::table('package_items')->where('package_id',$package->id)->where('service_id',$service->id)->first();
         $this->assertNotNull($item);
-        $this->get('/quote_settings')->assertOk()->assertSee('Add setup package')->assertSee('Add service to package')->assertSee('Enterprise Launch');
+        $this->get('/quote_settings')->assertOk()->assertSee('Add setup package')->assertSee('Add service to package')->assertSee('Enterprise Launch')
+            ->assertSee('Package total')->assertSee('$2,400.00', false);
         $this->get('/quote_studio')->assertOk()->assertSee('Enterprise Launch')->assertSee('data-tier="enterprise"',false);
 
         $answers=[];foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][1]['value'];}
@@ -560,6 +561,7 @@ class AgencySystemTest extends TestCase
         $setupItem=DB::table('package_items')->where('package_id',$setupPackage->id)->where('included',1)->first();
         $supportPackage=DB::table('packages')->where('package_type','support_contract')->where('tier','starter')->first();
         $supportItem=DB::table('package_items')->where('package_id',$supportPackage->id)->where('included',1)->first();
+        $expectedSupportMonthly=(float)DB::table('package_items')->where('package_id',$supportPackage->id)->where('included',1)->sum(DB::raw('quantity * unit_price'));
         $answers=[];foreach(config('quote_studio.assessment') as $question){$answers[$question['key']]=$question['options'][0]['value'];}
 
         $this->post('/quote_studio',[
@@ -576,7 +578,8 @@ class AgencySystemTest extends TestCase
         $this->assertSame(500.0,(float)$quote->membership_monthly_price);
         $this->assertSame(6000.0,(float)$quote->membership_amount);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support_contract','service_id'=>$supportItem->service_id,'quantity'=>12,'total'=>6000]);
-        $this->get('/quote_settings')->assertOk()->assertSee('One-time setup packages')->assertSee('Support contract packages');
+        $this->get('/quote_settings')->assertOk()->assertSee('One-time setup packages')->assertSee('Support contract packages')
+            ->assertSee('Package total')->assertSee('Monthly package total')->assertSee(money($expectedSupportMonthly).'/mo', false);
         $this->get('/quote_view?id='.$quote->id)->assertOk()
             ->assertSee('One-time setup services')
             ->assertSee('Technical support')
