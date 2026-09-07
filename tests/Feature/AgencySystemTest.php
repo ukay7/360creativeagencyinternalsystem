@@ -13,6 +13,15 @@ class AgencySystemTest extends TestCase
 {
     use DatabaseTransactions;
 
+    public function test_login_page_does_not_expose_default_credentials(): void
+    {
+        $this->get('/login')
+            ->assertOk()
+            ->assertDontSee('admin@agencyos.local')
+            ->assertDontSee('Admin@360!')
+            ->assertDontSee('Demo access is prefilled');
+    }
+
     public function test_admin_can_sign_in_and_open_every_module(): void
     {
         $response = $this->post('/login', [

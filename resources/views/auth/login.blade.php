@@ -33,10 +33,9 @@
             <h2>Welcome back</h2>
             <p class="text-muted mb-4">Sign in to manage 360 Creative Agency operations.</p>
             <?php foreach ($flashes as $message): ?><div class="alert alert-<?= e($message['type']) ?>"><?= e($message['message']) ?></div><?php endforeach; ?>
-            <div class="form-group"><label for="email">Email address</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-envelope"></i></span></div><input id="email" name="email" type="email" value="admin@agencyos.local" class="form-control" autocomplete="username" required></div></div>
-            <div class="form-group"><label for="password">Password</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-lock"></i></span></div><input id="password" name="password" type="password" value="Admin@360!" class="form-control" autocomplete="current-password" required></div></div>
+            <div class="form-group"><label for="email">Email address</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-envelope"></i></span></div><input id="email" name="email" type="email" value="<?= e(old('email', '')) ?>" class="form-control" autocomplete="username" required></div></div>
+            <div class="form-group"><label for="password">Password</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-lock"></i></span></div><input id="password" name="password" type="password" class="form-control" autocomplete="current-password" required></div></div>
             <button class="btn btn-primary btn-lg btn-block mt-4" type="submit">Enter command center <i class="fal fa-arrow-right ml-2"></i></button>
-            <div class="demo-credentials"><i class="fal fa-shield-check mr-2"></i><span>Demo access is prefilled for this local installation.</span></div>
         </form>
     </section>
 </main>
