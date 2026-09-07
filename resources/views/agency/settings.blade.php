@@ -111,7 +111,8 @@ $bankAccounts = $bankAccounts ?? [];
                         <button class="btn btn-link btn-block text-left d-flex align-items-center" type="button" data-toggle="collapse" data-target="#role-body-<?= (int)$role['id'] ?>">
                             <i class="fal fa-user-shield mr-2"></i><strong><?= e($role['name']) ?></strong>
                             <?php if($role['protected']): ?><span class="badge badge-soft-warning ml-auto mr-2"><i class="fal fa-lock mr-1"></i>Protected</span><?php endif; ?>
-                            <span class="badge badge-soft-primary <?= $role['protected']?'':'ml-auto' ?> mr-2"><?= count($role['permission_ids']) ?> modules</span><i class="fal fa-chevron-down"></i>
+                            <?php if((int)$role['user_count']>0): ?><span class="badge badge-soft-secondary <?= $role['protected']?'':'ml-auto' ?> mr-2"><?= (int)$role['user_count'] ?> <?= (int)$role['user_count']===1?'user':'users' ?></span><?php endif; ?>
+                            <span class="badge badge-soft-primary <?= $role['protected']||(int)$role['user_count']>0?'':'ml-auto' ?> mr-2"><?= count($role['permission_ids']) ?> modules</span><i class="fal fa-chevron-down"></i>
                         </button>
                     </div>
                     <div id="role-body-<?= (int)$role['id'] ?>" class="collapse <?= (int)$role['id']===(int)$firstEditableRoleId?'show':'' ?>" data-parent="#role-permissions">
@@ -119,7 +120,7 @@ $bankAccounts = $bankAccounts ?? [];
                             <?php if($role['protected']): ?>
                                 <div class="protected-role-notice">
                                     <i class="fal fa-lock"></i>
-                                    <div><strong>Protected system role</strong><span>The Admin role remains visible and assignable, but its details and permissions cannot be changed.</span></div>
+                                    <div><strong>Protected system role</strong><span>This core role remains visible and assignable, but it cannot be changed or deleted.</span></div>
                                 </div>
                             <?php else: ?>
                             <form method="post" action="<?= e(url('settings')) ?>">
@@ -154,6 +155,13 @@ $bankAccounts = $bankAccounts ?? [];
                                     <?php endforeach; ?>
                                 </div>
                                 <div class="role-editor-actions"><span><i class="fal fa-shield-check mr-1"></i>Changes apply to every user assigned to this role.</span><button class="btn btn-primary"><i class="fal fa-save mr-1"></i> Save role changes</button></div>
+                            </form>
+                            <form method="post" action="<?= e(url('settings')) ?>" class="d-flex justify-content-end align-items-center mt-3">
+                                <input type="hidden" name="_token" value="<?= e(\AgencyOS\Csrf::token()) ?>">
+                                <input type="hidden" name="action" value="delete_role">
+                                <input type="hidden" name="role_id" value="<?= (int)$role['id'] ?>">
+                                <?php if((int)$role['user_count']>0): ?><small class="text-muted mr-3">Reassign <?= (int)$role['user_count']===1?'the assigned user':'all assigned users' ?> before deletion.</small><button type="button" class="btn btn-outline-danger" disabled><i class="fal fa-trash-alt mr-1"></i> Delete role</button>
+                                <?php else: ?><button class="btn btn-outline-danger" data-confirm="Delete the ‘<?= e($role['name']) ?>’ role? Its permission configuration will also be removed."><i class="fal fa-trash-alt mr-1"></i> Delete role</button><?php endif; ?>
                             </form>
                             <?php endif; ?>
                         </div>

@@ -211,6 +211,7 @@ final class AgencyController extends Controller
                 'update_package_pricing'=>['packages.access', fn()=>$this->agency->updatePackagePricing($input), 'packages', 'Package pricing updated with a new effective date.'],
                 'create_role'=>['settings.access', fn()=>$this->agency->createRole($input), 'settings', 'Role created successfully.'],
                 'update_role'=>['settings.access', fn()=>$this->agency->updateRole($input), 'settings', 'Role details and permissions updated.'],
+                'delete_role'=>['settings.access', fn()=>$this->agency->deleteRole((int)$input['role_id']), 'settings', 'Role deleted successfully.'],
                 'update_role_permissions'=>['settings.access', fn()=>$this->agency->updateRolePermissions((int)$input['role_id'],(array)($input['permission_ids']??[])), 'settings', 'Role permissions updated.'],
                 'update_user_access'=>['settings.access', fn()=>$this->agency->updateUserAccess($input), 'settings', 'User role and access overrides updated.'],
                 'create_pipeline_stage'=>['settings.access', fn()=>$this->agency->createPipelineStage($input), 'settings', 'Pipeline stage created.'],
@@ -570,6 +571,7 @@ final class AgencyController extends Controller
                 'assign_package'=>['packages.manage', fn()=>$this->agency->assignPackage($_POST), 'client', 'Package assigned to the client.'],
                 'update_package_pricing'=>['packages.manage', fn()=>$this->agency->updatePackagePricing($_POST), 'packages', 'Package pricing updated with a new effective date.'],
                 'update_role'=>['settings.manage', fn()=>$this->agency->updateRole($_POST), 'settings', 'Role details and permissions updated.'],
+                'delete_role'=>['settings.manage', fn()=>$this->agency->deleteRole((int)$_POST['role_id']), 'settings', 'Role deleted successfully.'],
                 'update_role_permissions'=>['settings.manage', fn()=>$this->agency->updateRolePermissions((int)$_POST['role_id'],(array)($_POST['permission_ids']??[])), 'settings', 'Role permissions updated.'],
             ];
             if (!isset($handlers[$action])) {

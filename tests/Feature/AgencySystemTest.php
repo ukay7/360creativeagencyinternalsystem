@@ -256,6 +256,60 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseCount('navigation_groups', 7);
     }
 
+    public function test_roles_can_be_deleted_only_when_unassigned_and_unprotected(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        $dashboardPermission = (int)DB::table('permissions')->where('slug', 'dashboard.access')->value('id');
+        $roleId = DB::table('roles')->insertGetId([
+            'name'=>'Temporary Delete QA',
+            'slug'=>'temporary_delete_qa',
+            'description'=>'Safe deletion test role',
+            'created_at'=>now()->toDateTimeString(),
+        ]);
+        DB::table('role_permissions')->insert(['role_id'=>$roleId,'permission_id'=>$dashboardPermission]);
+
+        $this->get('/settings')->assertOk()
+            ->assertSee('name="action" value="delete_role"', false)
+            ->assertSee('Delete role');
+        $this->post('/settings', [
+            'action'=>'delete_role',
+            'role_id'=>$roleId,
+        ])->assertRedirect('/settings')->assertSessionHas('success');
+
+        $this->assertDatabaseMissing('roles', ['id'=>$roleId]);
+        $this->assertDatabaseMissing('role_permissions', ['role_id'=>$roleId]);
+        $this->assertDatabaseHas('audit_logs', ['action'=>'deleted','entity_type'=>'role','entity_id'=>$roleId]);
+
+        $adminRoleId = (int)DB::table('roles')->where('slug', 'admin')->value('id');
+        $this->post('/settings', [
+            'action'=>'delete_role',
+            'role_id'=>$adminRoleId,
+        ])->assertRedirect('/settings')->assertSessionHas('danger', 'Protected system roles cannot be deleted.');
+        $this->assertDatabaseHas('roles', ['id'=>$adminRoleId,'slug'=>'admin']);
+
+        $assignedRoleId = DB::table('roles')->insertGetId([
+            'name'=>'Assigned Delete QA',
+            'slug'=>'assigned_delete_qa',
+            'description'=>'Must be reassigned first',
+            'created_at'=>now()->toDateTimeString(),
+        ]);
+        DB::table('users')->insert([
+            'role_id'=>$assignedRoleId,
+            'name'=>'Assigned Role User QA',
+            'email'=>'assigned-role-user-qa@example.test',
+            'password_hash'=>password_hash('AssignedRole!2026', PASSWORD_DEFAULT),
+            'status'=>'active',
+            'created_at'=>now()->toDateTimeString(),
+            'updated_at'=>now()->toDateTimeString(),
+        ]);
+        $this->get('/settings')->assertOk()->assertSee('Reassign the assigned user before deletion.');
+        $this->post('/settings', [
+            'action'=>'delete_role',
+            'role_id'=>$assignedRoleId,
+        ])->assertRedirect('/settings')->assertSessionHas('danger', 'Reassign the user using this role before deleting it.');
+        $this->assertDatabaseHas('roles', ['id'=>$assignedRoleId]);
+    }
+
     public function test_sidebar_uses_database_driven_sections_in_business_order(): void
     {
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
@@ -866,6 +920,7 @@ class AgencySystemTest extends TestCase
             ->assertSee('Shared Multi Person Task QA')->assertDontSee('Other Employee Exclusive Task QA')
             ->assertDontSee('All employees');
         $this->get('/dashboard')->assertOk()->assertSee('MY DELIVERY WORKSPACE')->assertSee('My assigned workload')
+            ->assertSee('My open tasks')->assertSee('Overdue tasks')->assertSee('My task flow')
             ->assertDontSee('Accepted quote value');
         $this->get('/reports')->assertOk()->assertSee('MY DELIVERY INTELLIGENCE')
             ->assertSee('My task workload')->assertDontSee('Package performance');

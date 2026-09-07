@@ -734,7 +734,7 @@ final class AgencyService
 
     public function rolesWithPermissions(): array
     {
-        $roles=$this->db->all("SELECT * FROM roles WHERE slug!='super_admin' ORDER BY id");
+        $roles=$this->db->all("SELECT r.*,(SELECT COUNT(*) FROM users u WHERE u.role_id=r.id) AS user_count FROM roles r WHERE r.slug!='super_admin' ORDER BY r.id");
         foreach($roles as &$role){$role['protected']=in_array($role['slug'],['admin','client'],true);$role['permission_ids']=array_map('intval',array_column($this->db->all("SELECT rp.permission_id FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=? AND p.slug LIKE '%.access'",[$role['id']]),'permission_id'));}
         return $roles;
     }
@@ -1876,6 +1876,33 @@ final class AgencyService
             }
             $this->audit('created','role',$roleId,null,['name'=>$name,'slug'=>$slug,'permission_ids'=>$permissionIds]);
             return $roleId;
+        });
+    }
+
+    public function deleteRole(int $roleId): void
+    {
+        $role = $this->db->first('SELECT * FROM roles WHERE id=?', [$roleId]);
+        if (! $role) {
+            throw new InvalidArgumentException('The selected role no longer exists.');
+        }
+        if (in_array($role['slug'], ['super_admin','admin','client'], true)) {
+            throw new InvalidArgumentException('Protected system roles cannot be deleted.');
+        }
+
+        $userCount = (int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE role_id=?', [$roleId]);
+        if ($userCount > 0) {
+            throw new InvalidArgumentException('Reassign the '.($userCount === 1 ? 'user' : $userCount.' users').' using this role before deleting it.');
+        }
+
+        $permissionIds = array_map('intval', array_column($this->db->all('SELECT permission_id FROM role_permissions WHERE role_id=? ORDER BY permission_id', [$roleId]), 'permission_id'));
+        $this->db->transaction(function () use ($roleId, $role, $permissionIds): void {
+            $this->audit('deleted', 'role', $roleId, [
+                'name'=>$role['name'],
+                'slug'=>$role['slug'],
+                'description'=>$role['description'],
+                'permission_ids'=>$permissionIds,
+            ], null);
+            $this->db->execute('DELETE FROM roles WHERE id=?', [$roleId]);
         });
     }
 
