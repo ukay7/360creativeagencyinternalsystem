@@ -579,7 +579,7 @@ final class AgencyService
 
     public function employees(): array
     {
-        return $this->db->all("SELECT e.*, (SELECT COUNT(DISTINCT pta.task_id) FROM project_task_assignees pta JOIN project_tasks t ON t.id=pta.task_id WHERE pta.employee_id=e.id AND t.status!='completed') AS open_tasks, (SELECT COALESCE(SUM(te.hours),0) FROM time_entries te WHERE te.employee_id=e.id AND te.entry_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)) AS hours_week FROM employees e ORDER BY e.name");
+        return $this->db->all("SELECT e.*,u.id AS login_user_id,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug, (SELECT COUNT(DISTINCT pta.task_id) FROM project_task_assignees pta JOIN project_tasks t ON t.id=pta.task_id WHERE pta.employee_id=e.id AND t.status!='completed') AS open_tasks, (SELECT COALESCE(SUM(te.hours),0) FROM time_entries te WHERE te.employee_id=e.id AND te.entry_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)) AS hours_week FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id ORDER BY e.name");
     }
 
     public function timeEntries(): array
@@ -1949,6 +1949,129 @@ final class AgencyService
             $id = $this->db->insert('employees', ['user_id'=>$userId,'name'=>trim($input['name']),'email'=>trim($input['email']),'phone'=>trim($input['phone'] ?? ''),'job_title'=>trim($input['job_title'] ?? ''),'department'=>$input['department'],'skills'=>trim($input['skills'] ?? ''),'hourly_cost'=>$this->nonNegative($input['hourly_cost']),'capacity_hours'=>$this->nonNegative($input['capacity_hours'] ?? 40),'status'=>'active','created_at'=>date('c')]);
             $this->audit('created','employee',$id,null,array_diff_key($input,['password'=>true]));
             return $id;
+        });
+    }
+
+    public function updateEmployee(array $input): void
+    {
+        if (! $this->isAdministrator()) {
+            throw new InvalidArgumentException('Only administrators can edit team members.');
+        }
+
+        $this->required($input, ['employee_id','name','email','department','hourly_cost','capacity_hours','status']);
+        $employeeId = (int)$input['employee_id'];
+        $employee = $this->db->first("SELECT e.*,u.id AS login_user_id,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE e.id=?", [$employeeId]);
+        if (! $employee) {
+            throw new InvalidArgumentException('The selected team member no longer exists.');
+        }
+
+        $actorRole = (string)($this->auth->user()['role_slug'] ?? '');
+        if (($employee['login_role_slug'] ?? '') === 'super_admin' && $actorRole !== 'super_admin') {
+            throw new InvalidArgumentException('Only the Super Admin can edit the Super Admin team profile.');
+        }
+
+        $name = trim((string)$input['name']);
+        $email = mb_strtolower(trim((string)$input['email']));
+        if ($name === '' || ! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new InvalidArgumentException('Enter a valid employee name and email address.');
+        }
+        if (! in_array($input['status'], ['active','inactive'], true)) {
+            throw new InvalidArgumentException('Choose a valid employee status.');
+        }
+
+        $hourlyCost = $this->nonNegative($input['hourly_cost']);
+        $capacityHours = $this->nonNegative($input['capacity_hours']);
+        if ($capacityHours > 168) {
+            throw new InvalidArgumentException('Weekly capacity cannot exceed 168 hours.');
+        }
+        if ((int)$this->db->scalar('SELECT COUNT(*) FROM employees WHERE LOWER(email)=LOWER(?) AND id<>?', [$email,$employeeId])) {
+            throw new InvalidArgumentException('That email is already assigned to another team member.');
+        }
+
+        $loginUserId = (int)($employee['login_user_id'] ?? 0);
+        $createLogin = ! $loginUserId && ! empty($input['create_login']);
+        $password = (string)($input['password'] ?? '');
+        $loginRole = null;
+        $loginStatus = (string)($input['login_status'] ?? 'active');
+        $protectedLogin = ($employee['login_role_slug'] ?? '') === 'super_admin';
+
+        if ($loginUserId || $createLogin) {
+            if ((int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE LOWER(email)=LOWER(?) AND id<>?', [$email,$loginUserId])) {
+                throw new InvalidArgumentException('That email is already used by another system login.');
+            }
+        }
+        if (! $protectedLogin && ($loginUserId || $createLogin)) {
+            $loginRole = $this->db->first("SELECT id,name,slug FROM roles WHERE id=? AND slug NOT IN ('super_admin','client')", [(int)($input['role_id'] ?? 0)]);
+            if (! $loginRole || ! in_array($loginStatus, ['active','inactive'], true)) {
+                throw new InvalidArgumentException('Choose a valid login role and account status.');
+            }
+        }
+        if (($createLogin && $password === '') || ($password !== '' && strlen($password) < 10)) {
+            throw new InvalidArgumentException('Login passwords must be at least 10 characters.');
+        }
+
+        $employeeChanges = [
+            'name'=>$name,
+            'email'=>$email,
+            'phone'=>trim((string)($input['phone'] ?? '')),
+            'job_title'=>trim((string)($input['job_title'] ?? '')),
+            'department'=>trim((string)$input['department']),
+            'skills'=>trim((string)($input['skills'] ?? '')),
+            'hourly_cost'=>$hourlyCost,
+            'capacity_hours'=>$capacityHours,
+            'status'=>$input['status'],
+        ];
+        $before = ['employee'=>[
+            'id'=>$employeeId,
+            'name'=>$employee['name'],
+            'email'=>$employee['email'],
+            'phone'=>$employee['phone'] ?? '',
+            'job_title'=>$employee['job_title'] ?? '',
+            'department'=>$employee['department'],
+            'skills'=>$employee['skills'] ?? '',
+            'hourly_cost'=>$employee['hourly_cost'],
+            'capacity_hours'=>$employee['capacity_hours'],
+            'status'=>$employee['status'],
+        ], 'login'=>[
+            'user_id'=>$employee['login_user_id'] ?? null,
+            'role_id'=>$employee['login_role_id'] ?? null,
+            'status'=>$employee['login_status'] ?? null,
+        ]];
+
+        $this->db->transaction(function () use ($employeeId, $employee, $employeeChanges, $loginUserId, $createLogin, $protectedLogin, $loginRole, $loginStatus, $password, $name, $email, $before): void {
+            $resolvedUserId = $loginUserId;
+            if ($createLogin) {
+                $resolvedUserId = $this->db->insert('users', [
+                    'role_id'=>(int)$loginRole['id'],
+                    'name'=>$name,
+                    'email'=>$email,
+                    'password_hash'=>password_hash($password, PASSWORD_DEFAULT),
+                    'status'=>$loginStatus,
+                    'created_at'=>date('c'),
+                    'updated_at'=>date('c'),
+                ]);
+            } elseif ($loginUserId) {
+                $userChanges = ['name'=>$name,'email'=>$email,'updated_at'=>date('c')];
+                if (! $protectedLogin) {
+                    $userChanges['role_id'] = (int)$loginRole['id'];
+                    $userChanges['status'] = $loginStatus;
+                }
+                if ($password !== '') {
+                    $userChanges['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
+                }
+                $this->db->update('users', $loginUserId, $userChanges);
+            }
+
+            $this->db->update('employees', $employeeId, $employeeChanges + ['user_id'=>$resolvedUserId ?: null]);
+            $this->audit('updated', 'employee', $employeeId, $before, [
+                'employee'=>$employeeChanges + ['id'=>$employeeId],
+                'login'=>[
+                    'user_id'=>$resolvedUserId ?: null,
+                    'role_id'=>$protectedLogin ? ($employee['login_role_id'] ?? null) : ($loginRole['id'] ?? null),
+                    'status'=>$protectedLogin ? ($employee['login_status'] ?? null) : (($resolvedUserId ?: null) ? $loginStatus : null),
+                    'password_changed'=>$password !== '',
+                ],
+            ]);
         });
     }
 

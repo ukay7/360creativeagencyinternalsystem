@@ -1515,4 +1515,119 @@ class AgencySystemTest extends TestCase
             ->assertSee('No quotes yet')
             ->assertSeeText('Invoice reversals & net billing');
     }
+
+    public function test_admin_can_edit_team_profiles_and_linked_login_access(): void
+    {
+        $adminRoleId = (int)DB::table('roles')->where('slug', 'admin')->value('id');
+        $developerRoleId = (int)DB::table('roles')->where('slug', 'developer')->value('id');
+        $projectManagerRoleId = (int)DB::table('roles')->where('slug', 'project_manager')->value('id');
+        $adminUserId = DB::table('users')->insertGetId([
+            'role_id'=>$adminRoleId,
+            'name'=>'Team Admin QA',
+            'email'=>'team-admin-qa@example.test',
+            'password_hash'=>password_hash('AdminTeam!2026', PASSWORD_DEFAULT),
+            'status'=>'active',
+            'created_at'=>now(),
+            'updated_at'=>now(),
+        ]);
+        $this->actingAs(User::query()->findOrFail($adminUserId));
+
+        $employee = DB::table('employees')->whereNull('user_id')->orderBy('id')->first();
+        $this->assertNotNull($employee);
+        $taskAssignments = DB::table('project_task_assignees')->where('employee_id', $employee->id)->orderBy('task_id')->pluck('task_id')->all();
+
+        $this->get('/team')->assertOk()
+            ->assertSee('modal-edit-employee-'.$employee->id, false)
+            ->assertSee('Edit team member')
+            ->assertSee('Create a system login using this employee email');
+
+        $this->post('/team', [
+            'action'=>'update_employee',
+            'employee_id'=>$employee->id,
+            'name'=>'Updated Team Member',
+            'email'=>'updated-team-member@example.test',
+            'phone'=>'+1 416 555 0177',
+            'job_title'=>'Lead Developer',
+            'department'=>'Development',
+            'skills'=>'Laravel, JavaScript, Delivery',
+            'hourly_cost'=>62.50,
+            'capacity_hours'=>32,
+            'status'=>'active',
+            'create_login'=>'1',
+            'role_id'=>$developerRoleId,
+            'login_status'=>'active',
+            'password'=>'TeamLogin!2026',
+        ])->assertRedirect('/team')->assertSessionHas('success');
+
+        $updatedEmployee = DB::table('employees')->where('id', $employee->id)->first();
+        $this->assertSame('Updated Team Member', $updatedEmployee->name);
+        $this->assertSame('updated-team-member@example.test', $updatedEmployee->email);
+        $this->assertSame('Lead Developer', $updatedEmployee->job_title);
+        $this->assertSame(62.5, (float)$updatedEmployee->hourly_cost);
+        $this->assertSame(32.0, (float)$updatedEmployee->capacity_hours);
+        $this->assertNotNull($updatedEmployee->user_id);
+        $login = DB::table('users')->where('id', $updatedEmployee->user_id)->first();
+        $this->assertSame($developerRoleId, (int)$login->role_id);
+        $this->assertSame('active', $login->status);
+        $this->assertTrue(password_verify('TeamLogin!2026', $login->password_hash));
+        $this->assertSame($taskAssignments, DB::table('project_task_assignees')->where('employee_id', $employee->id)->orderBy('task_id')->pluck('task_id')->all());
+
+        $this->post('/team', [
+            'action'=>'update_employee',
+            'employee_id'=>$employee->id,
+            'name'=>'Updated Team Member',
+            'email'=>'updated-team-member@example.test',
+            'phone'=>'+1 416 555 0177',
+            'job_title'=>'Lead Developer',
+            'department'=>'Development',
+            'skills'=>'Laravel, JavaScript, Delivery',
+            'hourly_cost'=>62.50,
+            'capacity_hours'=>32,
+            'status'=>'inactive',
+            'role_id'=>$projectManagerRoleId,
+            'login_status'=>'inactive',
+        ])->assertRedirect('/team')->assertSessionHas('success');
+
+        $this->assertDatabaseHas('employees', ['id'=>$employee->id,'status'=>'inactive']);
+        $this->assertDatabaseHas('users', ['id'=>$updatedEmployee->user_id,'role_id'=>$projectManagerRoleId,'status'=>'inactive']);
+        $this->assertDatabaseHas('audit_logs', ['action'=>'updated','entity_type'=>'employee','entity_id'=>$employee->id]);
+    }
+
+    public function test_non_admin_with_team_view_access_cannot_edit_team_members(): void
+    {
+        $employeeRoleId = (int)DB::table('roles')->where('slug', 'employee')->value('id');
+        $teamPermissionId = (int)DB::table('permissions')->where('slug', 'team.access')->value('id');
+        $userId = DB::table('users')->insertGetId([
+            'role_id'=>$employeeRoleId,
+            'name'=>'Team Viewer QA',
+            'email'=>'team-viewer-qa@example.test',
+            'password_hash'=>password_hash('TeamViewer!2026', PASSWORD_DEFAULT),
+            'status'=>'active',
+            'created_at'=>now(),
+            'updated_at'=>now(),
+        ]);
+        DB::table('user_permissions')->insert([
+            'user_id'=>$userId,
+            'permission_id'=>$teamPermissionId,
+            'allowed'=>1,
+            'created_at'=>now(),
+            'updated_at'=>now(),
+        ]);
+        $this->actingAs(User::query()->findOrFail($userId));
+        $employee = DB::table('employees')->orderBy('id')->first();
+
+        $this->get('/team')->assertOk()->assertDontSee('modal-edit-employee-'.$employee->id, false);
+        $this->post('/team', [
+            'action'=>'update_employee',
+            'employee_id'=>$employee->id,
+            'name'=>'Unauthorized Change',
+            'email'=>$employee->email,
+            'department'=>$employee->department,
+            'hourly_cost'=>$employee->hourly_cost,
+            'capacity_hours'=>$employee->capacity_hours,
+            'status'=>$employee->status,
+        ])->assertRedirect('/team')->assertSessionHas('danger', 'Only administrators can edit team members.');
+
+        $this->assertDatabaseMissing('employees', ['id'=>$employee->id,'name'=>'Unauthorized Change']);
+    }
 }

@@ -102,7 +102,7 @@ final class AgencyController extends Controller
             'invoice' => ($invoice=$this->agency->invoice((int)($request->query('id') ?? $request->route('extra',0))))
                 ? $this->laravelPage('invoice', ['title'=>$invoice['invoice_number'],'invoice'=>$invoice], $route)
                 : $this->laravelPage('error',['title'=>'Invoice not found','message'=>'The requested invoice does not exist.'],$route,404),
-            'team' => $this->laravelPage('entity-list', array_merge($this->teamPage($options), ['rows'=>$this->agency->employees()]), $route),
+            'team' => $this->laravelPage('entity-list', array_merge($this->teamPage($options), ['rows'=>$this->agency->employees(),'teamRoles'=>$options['roles']]), $route),
             'time' => $this->laravelPage('entity-list', array_merge($this->timePage($options), ['rows'=>$this->agency->timeEntries()]), $route),
             'reports' => $this->laravelPage('reports', ['title'=>'Agency Reports','reports'=>$this->agency->reports()], $route),
             'settings' => $this->laravelPage('settings', ['title'=>'Settings','options'=>$options,'services'=>$this->agency->services(),'stages'=>$this->agency->pipeline(),'roles'=>$this->agency->rolesWithPermissions(),'permissions'=>$this->agency->permissions(),'systemUsers'=>$this->agency->systemUsersWithAccess(),'navigationItems'=>$this->agency->navigationConfiguration(),'invoiceProfile'=>$this->agency->invoiceProfile(),'bankAccounts'=>$this->agency->bankAccounts()], $route),
@@ -198,6 +198,7 @@ final class AgencyController extends Controller
                 'save_invoice_profile'=>['settings.access', $invoiceProfileSave, 'settings', 'Invoice branding, address, terms, and signature updated.'],
                 'save_bank_account'=>['settings.access', fn()=>$this->agency->saveBankAccount($input), 'settings', 'Bank account details saved.'],
                 'create_employee'=>['team.access', fn()=>$this->agency->createEmployee($input), 'team', 'Employee created successfully.'],
+                'update_employee'=>['team.access', fn()=>$this->agency->updateEmployee($input), 'team', 'Team member and login details updated successfully.'],
                 'log_time'=>['time.access', fn()=>$this->agency->logTime($input), 'time', 'Time entry saved and project hours updated.'],
                 'update_opportunity'=>['pipeline.access', fn()=>$this->agency->updateOpportunity($input), 'pipeline', 'Opportunity details updated.'],
                 'move_opportunity'=>['pipeline.access', fn()=>$this->agency->moveOpportunity($input), 'pipeline', 'Opportunity moved and related records synchronized.'],
@@ -558,6 +559,7 @@ final class AgencyController extends Controller
                 'create_invoice'=>['finance.manage', fn()=>$this->agency->createInvoice($_POST), 'invoices', 'Invoice created and marked as sent.'],
                 'record_payment'=>['finance.manage', fn()=>$this->agency->recordPayment($_POST), 'invoices', 'Payment recorded and balance updated.'],
                 'create_employee'=>['team.manage', fn()=>$this->agency->createEmployee($_POST), 'team', 'Employee created successfully.'],
+                'update_employee'=>['team.manage', fn()=>$this->agency->updateEmployee($_POST), 'team', 'Team member and login details updated successfully.'],
                 'log_time'=>['tasks.manage', fn()=>$this->agency->logTime($_POST), 'time', 'Time entry saved and project hours updated.'],
                 'move_opportunity'=>['crm.manage', fn()=>$this->agency->moveOpportunity((int)$_POST['opportunity_id'],(int)$_POST['stage_id']), 'pipeline', 'Opportunity moved.'],
                 'task_status'=>['tasks.manage', fn()=>$this->agency->updateSimpleStatus('task',(int)$_POST['id'],(string)$_POST['status']), 'tasks', 'Task status updated.'],
