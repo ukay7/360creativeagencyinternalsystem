@@ -453,6 +453,9 @@ class AgencySystemTest extends TestCase
             ->assertSee('data-membership-term="12"', false)
             ->assertSee('data-membership-term="custom"', false)
             ->assertDontSee('data-membership-term="18"', false)
+            ->assertSee('id="technical-support-total"', false)
+            ->assertSee('id="support-monthly-total"', false)
+            ->assertSee('id="support-contract-total"', false)
             ->assertSee('Search by business, contact, email, or phone')
             ->assertSee('class="required" data-i18n="contact_name"', false)
             ->assertSee('class="required" data-i18n="business_name"', false)
@@ -460,6 +463,7 @@ class AgencySystemTest extends TestCase
             ->assertSee('data-i18n="select_business_stage"', false);
 
         $script = file_get_contents(public_path('assets/js/quote-studio.js'));
+        $this->assertStringContainsString("getElementById('technical-support-total').textContent=money(amount.support)", $script);
         $this->assertStringContainsString('function clearClientDetails()', $script);
         $this->assertStringContainsString("form.elements.business_stage.value = '';", $script);
         $this->assertStringContainsString("form.elements.years_operating.value = '';", $script);
@@ -879,7 +883,8 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$taskId, 'action'=>'duplicated']);
         $this->get('/tasks?project_id='.$projectId)->assertOk()
             ->assertSee('Edited Task QA (Copy)')->assertSee('Waiting for the client approval before publishing.')
-            ->assertSee('Status Changed')->assertSee('TASK ACTIVITY TRAIL');
+            ->assertSee('Status Changed')->assertSee('TASK ACTIVITY TRAIL')
+            ->assertSee('Task details')->assertSee('Edited by Super Admin.');
 
         $this->post('/tasks', ['action'=>'delete_task', 'task_id'=>$copyId])
             ->assertRedirect('/tasks')->assertSessionHas('success');
@@ -955,6 +960,8 @@ class AgencySystemTest extends TestCase
         $month = now()->format('Y-m');
         $this->get('/calendar?month='.$month)->assertOk()->assertSee('MY DELIVERY SCHEDULE')
             ->assertSee('Shared Multi Person Task QA')->assertDontSee('Other Employee Exclusive Task QA')
+            ->assertSee('data-calendar-filter="employee"', false)
+            ->assertSee('value="'.$employeeIds[0].'" selected', false)
             ->assertDontSee('All employees');
         $this->get('/dashboard')->assertOk()->assertSee('MY DELIVERY WORKSPACE')->assertSee('My assigned workload')
             ->assertSee('My open tasks')->assertSee('Overdue tasks')->assertSee('My task flow')
@@ -996,15 +1003,42 @@ class AgencySystemTest extends TestCase
         $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
         $task=DB::table('project_tasks')->orderBy('id')->first();
         DB::table('project_tasks')->where('id',$task->id)->update([
-            'title'=>'Calendar Detail QA Task','description'=>'Full task instructions shown in the calendar modal.',
-            'due_date'=>'2026-09-09','status'=>'todo','priority'=>'high',
+            'title'=>'Calendar Pending QA Task','description'=>'Full task instructions shown in the calendar modal.',
+            'due_date'=>'2026-09-20','status'=>'todo','priority'=>'high',
         ]);
+        DB::table('projects')->where('id',$task->project_id)->update(['deadline'=>'2026-09-18']);
+        $taskRow=(array)DB::table('project_tasks')->where('id',$task->id)->first();
+        unset($taskRow['id']);
+        $taskRow['recurrence_id']=null;
+        $taskRow['proposal_work_item_id']=null;
+        $taskRow['occurrence_date']=null;
+        $taskRow['title']='Calendar Completed QA Task';
+        $taskRow['description']='Completed task remains visible in green.';
+        $taskRow['due_date']='2026-09-10';
+        $taskRow['status']='completed';
+        $taskRow['completed_at']='2026-09-08T10:00:00+00:00';
+        $completedTaskId=(int)DB::table('project_tasks')->insertGetId($taskRow);
+        $taskRow['title']='Calendar Missed QA Task';
+        $taskRow['description']='Overdue unfinished task appears in red.';
+        $taskRow['due_date']='2026-09-01';
+        $taskRow['status']='in_progress';
+        $taskRow['completed_at']=null;
+        $missedTaskId=(int)DB::table('project_tasks')->insertGetId($taskRow);
 
         $this->get('/calendar?month=2026-09')->assertOk()
-            ->assertSee('Calendar Detail QA Task')
+            ->assertSee('Calendar Pending QA Task')
+            ->assertSee('Calendar Completed QA Task')
+            ->assertSee('Calendar Missed QA Task')
+            ->assertSee('class="calendar-event event-warning"',false)
+            ->assertSee('class="calendar-event event-success"',false)
+            ->assertSee('class="calendar-event event-danger"',false)
+            ->assertSee('Completed task')->assertSee('Missed task')->assertSee('Pending / active task')
+            ->assertDontSee('Project deadline')->assertDontSee('Deadlines</option>',false)
             ->assertSee('data-calendar-event',false)
             ->assertSee('data-target="#calendar-event-task-'.$task->id.'"',false)
             ->assertSee('id="calendar-event-task-'.$task->id.'"',false)
+            ->assertSee('id="calendar-event-task-'.$completedTaskId.'"',false)
+            ->assertSee('id="calendar-event-task-'.$missedTaskId.'"',false)
             ->assertSee('Full task instructions shown in the calendar modal.')
             ->assertSee('Open client')->assertSee('Open project tasks')
             ->assertSee('Priority')->assertSee('Assigned to');
@@ -1301,7 +1335,7 @@ class AgencySystemTest extends TestCase
             ->assertSee('Client visible launch checklist')->assertSee('Open details')
             ->assertDontSee('Other client confidential task')->assertDontSee($employee->name);
         $this->get('/calendar?month='.now()->format('Y-m'))->assertOk()
-            ->assertSee('My Project Calendar')->assertSee('Client visible launch checklist')
+            ->assertSee('My Task Calendar')->assertSee('Client visible launch checklist')
             ->assertSee('All projects')->assertDontSee('Other client confidential task')->assertDontSee('All employees');
         $this->get('/clients')->assertForbidden();
 

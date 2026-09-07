@@ -691,25 +691,11 @@ final class AgencyService
                 $ownedScope = ' AND 1=0';
             }
         }
-        foreach ($this->db->all("SELECT t.id,t.title,t.description,t.due_date AS event_date,t.occurrence_date,t.priority,t.status,t.created_at,t.completed_at,COALESCE((SELECT GROUP_CONCAT(pta.employee_id ORDER BY pta.employee_id SEPARATOR ',') FROM project_task_assignees pta WHERE pta.task_id=t.id),CAST(t.assigned_employee_id AS CHAR)) AS employee_ids,t.assigned_employee_id AS employee_id,COALESCE((SELECT GROUP_CONCAT(ea.name ORDER BY ea.name SEPARATOR ', ') FROM project_task_assignees pta JOIN employees ea ON ea.id=pta.employee_id WHERE pta.task_id=t.id),e.name) AS employee_name,t.client_id,t.project_id,p.name AS project_name,b.name AS client_name,'task' AS event_type FROM project_tasks t JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id JOIN projects p ON p.id=t.project_id LEFT JOIN employees e ON e.id=t.assigned_employee_id WHERE t.due_date BETWEEN ? AND ? AND t.status!='completed'{$taskScope}", $taskParameters) as $row) { $events[] = $row; }
+        foreach ($this->db->all("SELECT t.id,t.title,t.description,t.due_date AS event_date,t.occurrence_date,t.priority,t.status,t.created_at,t.completed_at,COALESCE((SELECT GROUP_CONCAT(pta.employee_id ORDER BY pta.employee_id SEPARATOR ',') FROM project_task_assignees pta WHERE pta.task_id=t.id),CAST(t.assigned_employee_id AS CHAR)) AS employee_ids,t.assigned_employee_id AS employee_id,COALESCE((SELECT GROUP_CONCAT(ea.name ORDER BY ea.name SEPARATOR ', ') FROM project_task_assignees pta JOIN employees ea ON ea.id=pta.employee_id WHERE pta.task_id=t.id),e.name) AS employee_name,t.client_id,t.project_id,p.name AS project_name,b.name AS client_name,'task' AS event_type FROM project_tasks t JOIN clients c ON c.id=t.client_id JOIN businesses b ON b.id=c.business_id JOIN projects p ON p.id=t.project_id LEFT JOIN employees e ON e.id=t.assigned_employee_id WHERE t.due_date BETWEEN ? AND ?{$taskScope}", $taskParameters) as $row) { $events[] = $row; }
         if (! $isClient) {
             foreach ($this->db->all("SELECT v.id,v.visit_type AS title,v.visit_date AS event_date,v.start_time,v.end_time,v.visit_type,v.status,v.purpose,v.equipment,v.content_captured,v.notes,v.is_additional,v.additional_charge,CAST(v.assigned_employee_id AS CHAR) AS employee_ids,v.assigned_employee_id AS employee_id,e.name AS employee_name,v.client_id,NULL AS project_id,NULL AS project_name,b.name AS client_name,p.name AS package_name,'visit' AS event_type FROM content_visits v JOIN clients c ON c.id=v.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=v.assigned_employee_id LEFT JOIN subscriptions s ON s.id=v.subscription_id LEFT JOIN packages p ON p.id=s.package_id WHERE v.visit_date BETWEEN ? AND ? AND v.status!='cancelled'".str_replace('assigned_employee_id', 'v.assigned_employee_id', $ownedScope), $ownedParameters) as $row) { $events[] = $row; }
             foreach ($this->db->all("SELECT ci.id,ci.title,date(ci.scheduled_at) AS event_date,ci.scheduled_at AS event_datetime,ci.platform,ci.content_type,ci.caption,ci.hashtags,ci.status,ci.approval_status,ci.approval_comments,ci.created_at,CAST(ci.assigned_employee_id AS CHAR) AS employee_ids,ci.assigned_employee_id AS employee_id,e.name AS employee_name,ci.client_id,ci.project_id,p.name AS project_name,b.name AS client_name,'content' AS event_type FROM content_items ci JOIN clients c ON c.id=ci.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN projects p ON p.id=ci.project_id LEFT JOIN employees e ON e.id=ci.assigned_employee_id WHERE date(ci.scheduled_at) BETWEEN ? AND ?".str_replace('assigned_employee_id', 'ci.assigned_employee_id', $ownedScope), $ownedParameters) as $row) { $events[] = $row; }
         }
-        $deadlineScope = '';
-        $deadlineParameters = [$start, $end];
-        if ($isClient && $clientId) {
-            $deadlineScope = ' AND p.client_id=?';
-            $deadlineParameters[] = $clientId;
-        } elseif (! $isAdmin) {
-            if ($employeeId) {
-                $deadlineScope = ' AND EXISTS (SELECT 1 FROM project_tasks td WHERE td.project_id=p.id AND (EXISTS (SELECT 1 FROM project_task_assignees pta_deadline WHERE pta_deadline.task_id=td.id AND pta_deadline.employee_id=?) OR (NOT EXISTS (SELECT 1 FROM project_task_assignees pta_deadline_any WHERE pta_deadline_any.task_id=td.id) AND td.assigned_employee_id=?)))';
-                array_push($deadlineParameters, $employeeId, $employeeId);
-            } else {
-                $deadlineScope = ' AND 1=0';
-            }
-        }
-        foreach ($this->db->all("SELECT p.id,CONCAT(p.name, ' deadline') AS title,p.deadline AS event_date,p.project_type,p.start_date,p.deadline,p.priority,p.status,p.notes AS description,p.manager_id AS employee_id,e.name AS employee_name,p.client_id,p.id AS project_id,p.name AS project_name,b.name AS client_name,'deadline' AS event_type FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id LEFT JOIN employees e ON e.id=p.manager_id WHERE p.deadline BETWEEN ? AND ? AND p.status NOT IN ('completed','cancelled'){$deadlineScope}", $deadlineParameters) as $row) { $events[] = $row; }
         if ($isAdmin) {
             foreach ($this->db->all("SELECT s.id,CONCAT(p.name, ' renewal') AS title,s.renewal_date AS event_date,s.monthly_price,s.start_date,s.renewal_date,s.contract_end_date,s.billing_frequency,s.deposit,s.discount_percent,s.tax_percent,s.status,NULL AS employee_ids,NULL AS employee_id,NULL AS employee_name,s.client_id,NULL AS project_id,NULL AS project_name,b.name AS client_name,p.name AS package_name,'renewal' AS event_type FROM subscriptions s JOIN clients c ON c.id=s.client_id JOIN businesses b ON b.id=c.business_id JOIN packages p ON p.id=s.package_id WHERE s.renewal_date BETWEEN ? AND ? AND s.status='active'", [$start,$end]) as $row) { $events[] = $row; }
         }
@@ -719,11 +705,25 @@ final class AgencyService
 
     public function calendarFilterOptions(): array
     {
+        $isAdmin = $this->isAdministrator();
         $clientId = $this->isClientPortal() ? $this->currentClientId() : null;
+        $employeeId = ! $isAdmin && ! $clientId ? $this->currentEmployeeId() : null;
+        $employees = $isAdmin
+            ? $this->db->all("SELECT id,name FROM employees WHERE status='active' ORDER BY name")
+            : ($employeeId ? $this->db->all("SELECT id,name FROM employees WHERE id=? AND status='active'", [$employeeId]) : []);
+
+        if ($clientId) {
+            $projects = $this->db->all("SELECT p.id,p.name,p.client_id,b.name AS client_name FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id WHERE p.status NOT IN ('cancelled') AND p.client_id=? ORDER BY b.name,p.name", [$clientId]);
+        } elseif (! $isAdmin && $employeeId) {
+            $projects = $this->db->all("SELECT DISTINCT p.id,p.name,p.client_id,b.name AS client_name FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id JOIN project_tasks t ON t.project_id=p.id WHERE p.status NOT IN ('cancelled') AND (EXISTS (SELECT 1 FROM project_task_assignees pta WHERE pta.task_id=t.id AND pta.employee_id=?) OR (NOT EXISTS (SELECT 1 FROM project_task_assignees pta_any WHERE pta_any.task_id=t.id) AND t.assigned_employee_id=?)) ORDER BY b.name,p.name", [$employeeId, $employeeId]);
+        } else {
+            $projects = $isAdmin ? $this->db->all("SELECT p.id,p.name,p.client_id,b.name AS client_name FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id WHERE p.status NOT IN ('cancelled') ORDER BY b.name,p.name") : [];
+        }
+
         return [
-            'employees'=>$this->isAdministrator() ? $this->db->all("SELECT id,name FROM employees WHERE status='active' ORDER BY name") : [],
+            'employees'=>$employees,
             'clients'=>$clientId ? [] : $this->db->all("SELECT c.id,b.name FROM clients c JOIN businesses b ON b.id=c.business_id WHERE c.status='active' ORDER BY b.name"),
-            'projects'=>$this->db->all("SELECT p.id,p.name,p.client_id,b.name AS client_name FROM projects p JOIN clients c ON c.id=p.client_id JOIN businesses b ON b.id=c.business_id WHERE p.status NOT IN ('cancelled')".($clientId ? ' AND p.client_id=?' : '').' ORDER BY b.name,p.name', $clientId ? [$clientId] : []),
+            'projects'=>$projects,
         ];
     }
 

@@ -408,6 +408,7 @@
         var amount=totals();
         document.getElementById('plan-setup-total').textContent=money(amount.setup);
         document.getElementById('plan-support-total').textContent=money(amount.support);
+        document.getElementById('technical-support-total').textContent=money(amount.support);
         document.getElementById('plan-membership-total').textContent=money(amount.membership)+(hasMembership?' · '+membershipDurationValue()+' '+dictionary('months'):'');
         document.getElementById('support-monthly-total').textContent=money(amount.membershipMonthly);
         document.getElementById('support-contract-total').textContent=money(amount.membership);
