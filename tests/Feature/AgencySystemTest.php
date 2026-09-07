@@ -1792,4 +1792,63 @@ class AgencySystemTest extends TestCase
         ])->assertRedirect('/team')->assertSessionHas('danger', 'Only the Super Admin can permanently delete team members.');
         $this->assertDatabaseHas('employees', ['id'=>$target->id]);
     }
+
+    public function test_super_admin_can_manage_its_login_identity_and_password_separately_from_employee_details(): void
+    {
+        $superAdmin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $employee = DB::table('employees')->where('user_id', $superAdmin->id)->first();
+        $this->assertNotNull($employee);
+        $this->actingAs($superAdmin);
+
+        $this->get('/team')->assertOk()
+            ->assertSee('System login')
+            ->assertSee('name="login_email"', false)
+            ->assertSee('name="password_confirmation"', false)
+            ->assertSee($superAdmin->email);
+
+        $this->post('/team', [
+            'action'=>'update_employee',
+            'employee_id'=>$employee->id,
+            'name'=>'Separate Employee Profile QA',
+            'email'=>'separate-employee-profile-qa@example.test',
+            'phone'=>$employee->phone,
+            'job_title'=>$employee->job_title,
+            'department'=>$employee->department,
+            'skills'=>$employee->skills,
+            'hourly_cost'=>$employee->hourly_cost,
+            'capacity_hours'=>$employee->capacity_hours,
+            'status'=>'active',
+            'login_name'=>'Nimer Login QA',
+            'login_email'=>'nimer-login-qa@example.test',
+            'password'=>'NimerLogin!2026',
+            'password_confirmation'=>'NimerLogin!2026',
+        ])->assertRedirect('/team')->assertSessionHas('success');
+
+        $this->assertDatabaseHas('employees', [
+            'id'=>$employee->id,
+            'name'=>'Separate Employee Profile QA',
+            'email'=>'separate-employee-profile-qa@example.test',
+            'user_id'=>$superAdmin->id,
+        ]);
+        $updatedLogin = User::query()->findOrFail($superAdmin->id);
+        $this->assertSame('Nimer Login QA', $updatedLogin->name);
+        $this->assertSame('nimer-login-qa@example.test', $updatedLogin->email);
+        $this->assertTrue(password_verify('NimerLogin!2026', $updatedLogin->password_hash));
+
+        $this->post('/team', [
+            'action'=>'update_employee',
+            'employee_id'=>$employee->id,
+            'name'=>'Separate Employee Profile QA',
+            'email'=>'separate-employee-profile-qa@example.test',
+            'department'=>$employee->department,
+            'hourly_cost'=>$employee->hourly_cost,
+            'capacity_hours'=>$employee->capacity_hours,
+            'status'=>'active',
+            'login_name'=>'Nimer Login QA',
+            'login_email'=>'nimer-login-qa@example.test',
+            'password'=>'DoesNotMatch!2026',
+            'password_confirmation'=>'DifferentPassword!2026',
+        ])->assertRedirect('/team')->assertSessionHas('danger', 'The password confirmation does not match.');
+        $this->assertTrue(password_verify('NimerLogin!2026', User::query()->findOrFail($superAdmin->id)->password_hash));
+    }
 }

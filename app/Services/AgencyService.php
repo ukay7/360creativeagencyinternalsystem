@@ -579,7 +579,7 @@ final class AgencyService
 
     public function employees(): array
     {
-        return $this->db->all("SELECT e.*,u.id AS login_user_id,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug, (SELECT COUNT(DISTINCT pta.task_id) FROM project_task_assignees pta JOIN project_tasks t ON t.id=pta.task_id WHERE pta.employee_id=e.id AND t.status!='completed') AS open_tasks, (SELECT COALESCE(SUM(te.hours),0) FROM time_entries te WHERE te.employee_id=e.id AND te.entry_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)) AS hours_week FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id ORDER BY e.name");
+        return $this->db->all("SELECT e.*,u.id AS login_user_id,u.name AS login_user_name,u.email AS login_user_email,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug, (SELECT COUNT(DISTINCT pta.task_id) FROM project_task_assignees pta JOIN project_tasks t ON t.id=pta.task_id WHERE pta.employee_id=e.id AND t.status!='completed') AS open_tasks, (SELECT COALESCE(SUM(te.hours),0) FROM time_entries te WHERE te.employee_id=e.id AND te.entry_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)) AS hours_week FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id ORDER BY e.name");
     }
 
     public function timeEntries(): array
@@ -1999,7 +1999,7 @@ final class AgencyService
 
         $this->required($input, ['employee_id','name','email','department','hourly_cost','capacity_hours','status']);
         $employeeId = (int)$input['employee_id'];
-        $employee = $this->db->first("SELECT e.*,u.id AS login_user_id,u.email AS login_email,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE e.id=?", [$employeeId]);
+        $employee = $this->db->first("SELECT e.*,u.id AS login_user_id,u.name AS login_user_name,u.email AS login_email,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE e.id=?", [$employeeId]);
         if (! $employee) {
             throw new InvalidArgumentException('The selected team member no longer exists.');
         }
@@ -2034,10 +2034,15 @@ final class AgencyService
         $loginRole = null;
         $loginStatus = (string)($input['login_status'] ?? 'active');
         $protectedLogin = ($employee['login_role_slug'] ?? '') === 'super_admin';
+        $loginName = $protectedLogin ? trim((string)($input['login_name'] ?? $employee['login_user_name'] ?? '')) : $name;
+        $loginEmail = $protectedLogin ? mb_strtolower(trim((string)($input['login_email'] ?? $employee['login_email'] ?? ''))) : $email;
 
-        $loginEmailChanged = $loginUserId && mb_strtolower(trim((string)($employee['login_email'] ?? ''))) !== $email;
+        if ($protectedLogin && ($loginName === '' || ! filter_var($loginEmail, FILTER_VALIDATE_EMAIL))) {
+            throw new InvalidArgumentException('Enter a valid Super Admin login name and email address.');
+        }
+        $loginEmailChanged = $loginUserId && mb_strtolower(trim((string)($employee['login_email'] ?? ''))) !== $loginEmail;
         if ($createLogin || $loginEmailChanged) {
-            if ((int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE LOWER(email)=? AND id<>?', [$email,$loginUserId])) {
+            if ((int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE LOWER(email)=? AND id<>?', [$loginEmail,$loginUserId])) {
                 throw new InvalidArgumentException('That email is already used by another system login.');
             }
         }
@@ -2049,6 +2054,9 @@ final class AgencyService
         }
         if (($createLogin && $password === '') || ($password !== '' && strlen($password) < 10)) {
             throw new InvalidArgumentException('Login passwords must be at least 10 characters.');
+        }
+        if ($password !== '' && array_key_exists('password_confirmation', $input) && ! hash_equals($password, (string)$input['password_confirmation'])) {
+            throw new InvalidArgumentException('The password confirmation does not match.');
         }
 
         $employeeChanges = [
@@ -2075,24 +2083,26 @@ final class AgencyService
             'status'=>$employee['status'],
         ], 'login'=>[
             'user_id'=>$employee['login_user_id'] ?? null,
+            'name'=>$employee['login_user_name'] ?? null,
+            'email'=>$employee['login_email'] ?? null,
             'role_id'=>$employee['login_role_id'] ?? null,
             'status'=>$employee['login_status'] ?? null,
         ]];
 
-        $this->db->transaction(function () use ($employeeId, $employee, $employeeChanges, $loginUserId, $createLogin, $protectedLogin, $loginRole, $loginStatus, $password, $name, $email, $before): void {
+        $this->db->transaction(function () use ($employeeId, $employee, $employeeChanges, $loginUserId, $createLogin, $protectedLogin, $loginRole, $loginStatus, $password, $loginName, $loginEmail, $before): void {
             $resolvedUserId = $loginUserId;
             if ($createLogin) {
                 $resolvedUserId = $this->db->insert('users', [
                     'role_id'=>(int)$loginRole['id'],
-                    'name'=>$name,
-                    'email'=>$email,
+                    'name'=>$loginName,
+                    'email'=>$loginEmail,
                     'password_hash'=>password_hash($password, PASSWORD_DEFAULT),
                     'status'=>$loginStatus,
                     'created_at'=>date('c'),
                     'updated_at'=>date('c'),
                 ]);
             } elseif ($loginUserId) {
-                $userChanges = ['name'=>$name,'email'=>$email,'updated_at'=>date('c')];
+                $userChanges = ['name'=>$loginName,'email'=>$loginEmail,'updated_at'=>date('c')];
                 if (! $protectedLogin) {
                     $userChanges['role_id'] = (int)$loginRole['id'];
                     $userChanges['status'] = $loginStatus;
@@ -2108,6 +2118,8 @@ final class AgencyService
                 'employee'=>$employeeChanges + ['id'=>$employeeId],
                 'login'=>[
                     'user_id'=>$resolvedUserId ?: null,
+                    'name'=>$resolvedUserId ? $loginName : null,
+                    'email'=>$resolvedUserId ? $loginEmail : null,
                     'role_id'=>$protectedLogin ? ($employee['login_role_id'] ?? null) : ($loginRole['id'] ?? null),
                     'status'=>$protectedLogin ? ($employee['login_status'] ?? null) : (($resolvedUserId ?: null) ? $loginStatus : null),
                     'password_changed'=>$password !== '',
