@@ -955,8 +955,12 @@ class AgencySystemTest extends TestCase
             'created_at'=>date('c'), 'updated_at'=>date('c'),
         ]);
         $this->actingAs(User::query()->findOrFail($adminUserId));
-        $this->get('/tasks?project_id='.$projectId)->assertOk()->assertSee('Shared Multi Person Task QA')->assertSee('Other Employee Exclusive Task QA');
+        $this->get('/tasks?project_id='.$projectId)->assertOk()->assertSee('Shared Multi Person Task QA')->assertSee('Other Employee Exclusive Task QA')->assertSee('Delete task');
         $this->get('/calendar?month='.$month)->assertOk()->assertSee('SHARED SCHEDULE')->assertSee('Other Employee Exclusive Task QA');
+        $this->post('/tasks', ['action'=>'delete_task', 'task_id'=>$exclusiveTaskId])
+            ->assertRedirect('/tasks')->assertSessionHas('success');
+        $this->assertDatabaseMissing('project_tasks', ['id'=>$exclusiveTaskId]);
+        $this->assertDatabaseHas('audit_logs', ['entity_type'=>'task', 'entity_id'=>$exclusiveTaskId, 'action'=>'deleted']);
 
         $this->actingAs($superAdmin);
         $this->post('/projects', ['action'=>'delete_project', 'project_id'=>$projectId])

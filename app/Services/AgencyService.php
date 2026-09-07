@@ -1491,7 +1491,7 @@ final class AgencyService
 
     public function deleteTask(int $taskId): void
     {
-        if (($this->auth->user()['role_slug'] ?? '') !== 'super_admin') { throw new InvalidArgumentException('Only the Super Admin can delete tasks.'); }
+        if (! $this->isAdministrator()) { throw new InvalidArgumentException('Only administrators can delete tasks.'); }
         $task = $this->db->first('SELECT * FROM project_tasks WHERE id=?', [$taskId]);
         if (! $task) { throw new InvalidArgumentException('The task could not be found.'); }
         if ((int)$this->db->scalar('SELECT COUNT(*) FROM time_entries WHERE task_id=?', [$taskId]) > 0) {
