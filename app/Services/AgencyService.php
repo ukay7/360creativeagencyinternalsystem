@@ -1560,7 +1560,7 @@ final class AgencyService
 
     public function updateTask(array $input): void
     {
-        if (($this->auth->user()['role_slug'] ?? '') !== 'super_admin') { throw new InvalidArgumentException('Only the Super Admin can edit tasks.'); }
+        if (! $this->isAdministrator()) { throw new InvalidArgumentException('Only administrators can edit tasks.'); }
         $this->required($input, ['task_id','project_id','title','status','priority']);
         $taskId = (int)$input['task_id'];
         $before = $this->db->first('SELECT * FROM project_tasks WHERE id=?', [$taskId]);
