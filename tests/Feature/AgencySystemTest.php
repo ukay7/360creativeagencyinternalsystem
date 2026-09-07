@@ -19,7 +19,21 @@ class AgencySystemTest extends TestCase
             ->assertOk()
             ->assertDontSee('admin@agencyos.local')
             ->assertDontSee('Admin@360!')
-            ->assertDontSee('Demo access is prefilled');
+            ->assertDontSee('Demo access is prefilled')
+            ->assertSee('placeholder="Enter Email Address"', false)
+            ->assertSee('placeholder="Enter Password"', false);
+    }
+
+    public function test_local_and_uat_login_pages_prefill_quick_login_credentials(): void
+    {
+        foreach (['local', 'uat'] as $environment) {
+            $this->app['env'] = $environment;
+
+            $this->get('/login')
+                ->assertOk()
+                ->assertSee('value="admin@agencyos.local"', false)
+                ->assertSee('value="Admin@360!"', false);
+        }
     }
 
     public function test_admin_can_sign_in_and_open_every_module(): void

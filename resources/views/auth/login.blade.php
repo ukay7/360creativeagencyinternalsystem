@@ -11,6 +11,7 @@
     <link rel="apple-touch-icon" href="<?= e(asset('img/360-logo-final-exact.png')) ?>">
 </head>
 <body class="login-page">
+<?php $prefillQuickLogin = app()->environment(['local', 'uat']); ?>
 <main class="login-shell">
     <section class="login-story">
         <div class="login-brand"><img class="brand-logo login-brand-logo" src="<?= e(asset('img/360-logo-final-exact.png')) ?>" alt="360 Creative Agency logo"><span>360 Creative Agency</span></div>
@@ -33,8 +34,8 @@
             <h2>Welcome back</h2>
             <p class="text-muted mb-4">Sign in to manage 360 Creative Agency operations.</p>
             <?php foreach ($flashes as $message): ?><div class="alert alert-<?= e($message['type']) ?>"><?= e($message['message']) ?></div><?php endforeach; ?>
-            <div class="form-group"><label for="email">Email address</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-envelope"></i></span></div><input id="email" name="email" type="email" value="<?= e(old('email', '')) ?>" class="form-control" autocomplete="username" required></div></div>
-            <div class="form-group"><label for="password">Password</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-lock"></i></span></div><input id="password" name="password" type="password" class="form-control" autocomplete="current-password" required></div></div>
+            <div class="form-group"><label for="email">Email address</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-envelope"></i></span></div><input id="email" name="email" type="email" value="<?= e(old('email', $prefillQuickLogin ? 'admin@agencyos.local' : '')) ?>" placeholder="Enter Email Address" class="form-control" autocomplete="username" required></div></div>
+            <div class="form-group"><label for="password">Password</label><div class="input-group input-group-lg"><div class="input-group-prepend"><span class="input-group-text"><i class="fal fa-lock"></i></span></div><input id="password" name="password" type="password" value="<?= $prefillQuickLogin ? 'Admin@360!' : '' ?>" placeholder="Enter Password" class="form-control" autocomplete="current-password" required></div></div>
             <button class="btn btn-primary btn-lg btn-block mt-4" type="submit">Enter command center <i class="fal fa-arrow-right ml-2"></i></button>
         </form>
     </section>
