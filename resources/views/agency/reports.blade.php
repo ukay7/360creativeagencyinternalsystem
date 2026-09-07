@@ -18,7 +18,7 @@
 <div class="row mt-4">
     <div class="col-xl-5">
         <section class="panel report-workflow-panel h-100"><div class="panel-hdr"><div><h2>Quote performance</h2><small>Volume and value by status</small></div></div><div class="panel-container show"><div class="panel-content">
-            <?php $maxQuoteValue=max(1,...array_map(static fn($row)=>(float)$row['quote_value'],$reports['quote_statuses'])); ?>
+            <?php $maxQuoteValue=max(array_merge([1.0],array_map(static fn($row)=>(float)$row['quote_value'],$reports['quote_statuses']))); ?>
             <?php if(!$reports['quote_statuses']): ?><div class="command-empty compact"><i class="fal fa-file-signature"></i><strong>No quotes yet</strong></div><?php endif; ?>
             <?php foreach($reports['quote_statuses'] as $row): ?><div class="report-bar-row"><div><strong><?= e(ucfirst($row['status'])) ?></strong><span><?= (int)$row['quote_count'] ?> quotes</span></div><div><div class="progress-thin"><span style="width:<?= e((string)round((float)$row['quote_value']/$maxQuoteValue*100)) ?>%"></span></div><strong><?= e(money($row['quote_value'])) ?></strong></div></div><?php endforeach; ?>
         </div></div></section>

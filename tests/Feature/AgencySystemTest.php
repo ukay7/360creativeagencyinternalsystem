@@ -1504,4 +1504,15 @@ class AgencySystemTest extends TestCase
         $this->get('/invoices')->assertOk()->assertSee('Gross issued')->assertSee('Partial refunds')->assertSee('Invoice adjustment report')->assertSee($cancellation->adjustment_number);
         $this->get('/reports')->assertOk()->assertSeeText('Invoice reversals & net billing')->assertSee('Net invoiced');
     }
+
+    public function test_reports_render_the_empty_quote_state_without_a_server_error(): void
+    {
+        $this->actingAs(User::query()->where('email', 'admin@agencyos.local')->firstOrFail());
+        DB::table('proposals')->delete();
+
+        $this->get('/reports')->assertOk()
+            ->assertSee('Workflow Reports')
+            ->assertSee('No quotes yet')
+            ->assertSeeText('Invoice reversals & net billing');
+    }
 }
