@@ -1874,4 +1874,56 @@ class AgencySystemTest extends TestCase
         ])->assertRedirect('/team')->assertSessionHas('danger', 'The password confirmation does not match.');
         $this->assertTrue(password_verify('NimerLogin!2026', User::query()->findOrFail($superAdmin->id)->password_hash));
     }
+
+    public function test_admin_can_upload_and_remove_a_team_profile_photo_used_in_the_sidebar(): void
+    {
+        $superAdmin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $employee = DB::table('employees')->where('user_id', $superAdmin->id)->first();
+        $this->assertNotNull($employee);
+        $this->actingAs($superAdmin);
+
+        $payload = [
+            'action'=>'update_employee',
+            'employee_id'=>$employee->id,
+            'name'=>$employee->name,
+            'email'=>$employee->email,
+            'phone'=>$employee->phone,
+            'job_title'=>$employee->job_title,
+            'department'=>$employee->department,
+            'skills'=>$employee->skills,
+            'hourly_cost'=>$employee->hourly_cost,
+            'capacity_hours'=>$employee->capacity_hours,
+            'status'=>$employee->status,
+            'login_name'=>$superAdmin->name,
+            'login_email'=>$superAdmin->email,
+        ];
+
+        $this->post('/team', $payload + [
+            'profile_photo'=>UploadedFile::fake()->image('profile.png', 240, 240)->size(400),
+        ])->assertRedirect('/team')->assertSessionHas('success');
+
+        $storedPath = (string)DB::table('employees')->where('id', $employee->id)->value('profile_photo_path');
+        $this->assertNotSame('', $storedPath);
+        $storedFile = storage_path('app/private/profile-photos/'.$storedPath);
+        $this->assertFileExists($storedFile);
+
+        try {
+            $this->get('/profile_photo/'.$employee->id)->assertOk()->assertHeader('content-type', 'image/png');
+            $this->get('/dashboard')->assertOk()
+                ->assertSee('user-profile-photo', false)
+                ->assertSee('/profile_photo/'.$employee->id, false);
+
+            $this->post('/team', $payload + [
+                'profile_photo'=>UploadedFile::fake()->create('profile.pdf', 50, 'application/pdf'),
+            ])->assertRedirect('/team')->assertSessionHas('danger', 'Use a JPG, PNG, or WebP profile photo.');
+            $this->assertSame($storedPath, (string)DB::table('employees')->where('id', $employee->id)->value('profile_photo_path'));
+
+            $this->post('/team', $payload + ['remove_profile_photo'=>'1'])
+                ->assertRedirect('/team')->assertSessionHas('success');
+            $this->assertNull(DB::table('employees')->where('id', $employee->id)->value('profile_photo_path'));
+            $this->assertFileDoesNotExist($storedFile);
+        } finally {
+            if (is_file($storedFile)) { unlink($storedFile); }
+        }
+    }
 }

@@ -7,6 +7,9 @@ $uiLocale = (string) session('ui_locale', config('ui_languages.default', 'en'));
 $uiLocale = array_key_exists($uiLocale, $uiLocales) ? $uiLocale : 'en';
 $uiDirection = (string) ($uiLocales[$uiLocale]['dir'] ?? 'ltr');
 $isClientPortal = ($user['role_slug'] ?? '') === 'client';
+$profilePhotoUrl = !empty($user['employee_id']) && !empty($user['profile_photo_path'])
+    ? agency_url('profile_photo', ['extra'=>(int)$user['employee_id']]).'?v='.rawurlencode((string)$user['profile_photo_path'])
+    : null;
 ?>
 <!DOCTYPE html>
 <html lang="<?= e($uiLocale) ?>" dir="<?= e($uiDirection) ?>">
@@ -42,7 +45,7 @@ $isClientPortal = ($user['role_slug'] ?? '') === 'client';
                     </div>
                 </div>
                 <div class="info-card agency-info-card">
-                    <div class="profile-image rounded-circle avatar-initials"><?= e(strtoupper(substr($user['name'],0,1))) ?></div>
+                    <?php if($profilePhotoUrl): ?><img class="profile-image rounded-circle user-profile-photo" src="<?= e($profilePhotoUrl) ?>" alt="<?= e($user['name']) ?> profile photo"><?php else: ?><div class="profile-image rounded-circle avatar-initials"><?= e(strtoupper(substr($user['name'],0,1))) ?></div><?php endif; ?>
                     <div class="info-card-text">
                         <span class="d-flex align-items-center text-white font-weight-bold"><?= e($user['name']) ?></span>
                         <span class="d-inline-block text-truncate text-truncate-sm"><?= e($user['role_name']) ?></span>
@@ -123,7 +126,7 @@ $isClientPortal = ($user['role_slug'] ?? '') === 'client';
                     </div>
                     <a href="<?= e(url('search')) ?>" class="header-icon d-md-none" aria-label="Search"><i class="fal fa-search"></i></a><?php endif; ?>
                     <div class="dropdown">
-                        <a href="#" data-toggle="dropdown" class="header-icon d-flex align-items-center justify-content-center ml-2" aria-label="Account menu"><span class="avatar-sm"><?= e(strtoupper(substr($user['name'],0,1))) ?></span></a>
+                        <a href="#" data-toggle="dropdown" class="header-icon d-flex align-items-center justify-content-center ml-2" aria-label="Account menu"><?php if($profilePhotoUrl): ?><img class="avatar-sm user-avatar-photo" src="<?= e($profilePhotoUrl) ?>" alt=""><?php else: ?><span class="avatar-sm"><?= e(strtoupper(substr($user['name'],0,1))) ?></span><?php endif; ?></a>
                         <div class="dropdown-menu dropdown-menu-right p-2">
                             <div class="px-3 py-2 border-bottom mb-2"><strong class="d-block"><?= e($user['name']) ?></strong><small class="text-muted"><?= e($user['email']) ?></small></div>
                             <a class="dropdown-item" href="<?= e(url('change_password')) ?>"><i class="fal fa-key mr-2"></i>Change password</a>

@@ -36,7 +36,7 @@ final class AgencyController extends Controller
             'dashboard'=>'dashboard.access','leads'=>'leads.access','lead'=>'leads.access','pipeline'=>'pipeline.access','discovery'=>'discovery.access','clients'=>'clients.access','client'=>'clients.access','contracts'=>'contracts.access',
             'packages'=>'packages.access','services'=>'services.access','proposals'=>'proposals.access','projects'=>'projects.access','tasks'=>'tasks.access',
             'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','task_file'=>'tasks.access','task_file_view'=>'tasks.access','calendar'=>'calendar.access','invoices'=>'invoices.access','invoice'=>'invoices.access','invoice_pdf'=>'invoices.access','invoice_adjustment_pdf'=>'invoices.access','team'=>'team.access','time'=>'time.access',
-            'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access','change_password'=>null,
+            'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access','change_password'=>null,'profile_photo'=>null,
             'quote_studio'=>'proposals.access','saved_quotes'=>'proposals.access','quote_view'=>'proposals.access','quote_settings'=>'settings.access',
         ];
 
@@ -45,6 +45,9 @@ final class AgencyController extends Controller
         }
         if ($permissionMap[$route] !== null && ! $this->auth->can($permissionMap[$route])) {
             return $this->laravelPage('error', ['title'=>'Access denied','message'=>'Your role does not have permission to open this area.'], $route, 403);
+        }
+        if ($route === 'profile_photo') {
+            return $this->laravelProfilePhoto((int) ($request->route('extra') ?? 0));
         }
         if ($route === 'media_download') {
             return $this->laravelDownloadMedia((int) ($request->query('id') ?? $request->route('extra', 0)));
@@ -161,6 +164,7 @@ final class AgencyController extends Controller
                 return $this->agency->uploadTaskFiles((int)($input['task_id'] ?? 0), $files, (bool)($input['client_visible'] ?? false));
             };
             $invoiceProfileSave = fn(): mixed => $this->agency->saveInvoiceProfile($input, $request->file('signature_image'));
+            $employeePhoto = $request->file('profile_photo');
             $handlers = [
                 'create_lead'=>['leads.access', fn()=>$this->agency->createLead($input), 'leads', 'Lead created and added to the pipeline.'],
                 'update_lead'=>['leads.access', fn()=>$this->agency->updateLead($input), 'lead', 'Lead details and qualification updated.'],
@@ -197,8 +201,8 @@ final class AgencyController extends Controller
                 'create_invoice_adjustment'=>['invoices.access', fn()=>$this->agency->createInvoiceAdjustment($input), 'invoice', 'Invoice adjustment created with a downloadable document.'],
                 'save_invoice_profile'=>['settings.access', $invoiceProfileSave, 'settings', 'Invoice branding, address, terms, and signature updated.'],
                 'save_bank_account'=>['settings.access', fn()=>$this->agency->saveBankAccount($input), 'settings', 'Bank account details saved.'],
-                'create_employee'=>['team.access', fn()=>$this->agency->createEmployee($input), 'team', 'Employee created successfully.'],
-                'update_employee'=>['team.access', fn()=>$this->agency->updateEmployee($input), 'team', 'Team member and login details updated successfully.'],
+                'create_employee'=>['team.access', fn()=>$this->agency->createEmployee($input, $employeePhoto), 'team', 'Employee created successfully.'],
+                'update_employee'=>['team.access', fn()=>$this->agency->updateEmployee($input, $employeePhoto), 'team', 'Team member and login details updated successfully.'],
                 'delete_employee'=>['team.access', fn()=>$this->agency->deleteEmployee((int)$input['employee_id']), 'team', 'Team member and linked login permanently deleted.'],
                 'log_time'=>['time.access', fn()=>$this->agency->logTime($input), 'time', 'Time entry saved and project hours updated.'],
                 'update_opportunity'=>['pipeline.access', fn()=>$this->agency->updateOpportunity($input), 'pipeline', 'Opportunity details updated.'],
@@ -303,6 +307,33 @@ final class AgencyController extends Controller
             if (session()->has($type)) { $flashes[] = ['type'=>$type, 'message'=>(string) session($type)]; }
         }
         return response()->view('layouts.app', array_merge($data, ['auth'=>$this->auth,'flashes'=>$flashes,'currentRoute'=>$route,'contentView'=>'agency.'.$view]), $status);
+    }
+
+    private function laravelProfilePhoto(int $employeeId): mixed
+    {
+        $employee = $this->db->first('SELECT id,profile_photo_path FROM employees WHERE id=?', [$employeeId]);
+        if (! $employee || empty($employee['profile_photo_path'])) { abort(404); }
+
+        $viewer = $this->auth->user() ?? [];
+        $isAdministrator = in_array((string)($viewer['role_slug'] ?? ''), ['super_admin', 'admin'], true);
+        $canViewTeam = $this->auth->can('team.access');
+        if (! $isAdministrator && ! $canViewTeam && (int)($viewer['employee_id'] ?? 0) !== $employeeId) { abort(403); }
+
+        $base = realpath(storage_path('app/private/profile-photos'));
+        $path = realpath(storage_path('app/private/profile-photos/'.$employee['profile_photo_path']));
+        if (! $base || ! $path || ! str_starts_with($path, $base.DIRECTORY_SEPARATOR) || ! is_file($path)) { abort(404); }
+
+        $mime = match (strtolower(pathinfo($path, PATHINFO_EXTENSION))) {
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            default => 'image/jpeg',
+        };
+
+        return response()->file($path, [
+            'Content-Type'=>$mime,
+            'Cache-Control'=>'private, max-age=3600',
+            'X-Content-Type-Options'=>'nosniff',
+        ]);
     }
 
     private function laravelDownloadMedia(int $id): mixed
@@ -658,7 +689,7 @@ final class AgencyController extends Controller
     private function visitPage(array $o): array { return ['title'=>'Content Visits','subtitle'=>'Schedule production and automatically meter package allowances.','route'=>'visits','addLabel'=>'Schedule Visit','action'=>'create_visit','columns'=>[['business_name','Client','text'],['visit_date','Date','date'],['time','Time','visit_time'],['purpose','Purpose','text'],['assignee','Assigned to','text'],['status','Status','badge'],['usage','Allowance','usage'],['additional_charge','Charge','money']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['subscription_id','Subscription','select',false,$o['subscriptions']],['assigned_employee_id','Assigned employee','select',false,$o['employees']],['visit_date','Visit date','date',true],['start_time','Start time','time',false],['end_time','End time','time',false],['visit_type','Visit type','select',true,$this->simpleOptions(['Content production'=>'Content production','Photography'=>'Photography','Videography'=>'Videography','Campaign shoot'=>'Campaign shoot'])],['purpose','Purpose','textarea',false],['equipment','Equipment','text',false],['notes','Notes','textarea',false]]]; }
     private function contentPage(array $o): array { return ['title'=>'Content Calendar','subtitle'=>'Plan, approve, and publish content across every client.','route'=>'content','addLabel'=>'New Content','action'=>'create_content','columns'=>[['title','Content','strong'],['business_name','Client','text'],['platform','Platform','text'],['content_type','Format','text'],['scheduled_at','Scheduled','datetime'],['status','Status','content_status'],['approval_status','Approval','approval_form'],['assignee','Owner','text']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['project_id','Project','select',false,$o['projects']],['assigned_employee_id','Assigned employee','select',false,$o['employees']],['title','Content title','text',true],['platform','Platform','select',true,$this->simpleOptions(array_combine(['Instagram','Facebook','TikTok','LinkedIn','Google Business','YouTube'],['Instagram','Facebook','TikTok','LinkedIn','Google Business','YouTube']))],['content_type','Format','select',true,$this->simpleOptions(array_combine(['Post','Carousel','Reel','Story','Video','Photo'],['Post','Carousel','Reel','Story','Video','Photo']))],['caption','Caption','textarea',false],['hashtags','Hashtags','text',false],['scheduled_at','Scheduled at','datetime-local',false]]]; }
     private function invoicePage(array $o): array { return ['title'=>'Invoices & Payments','subtitle'=>'Track billing, collections, and outstanding balances.','route'=>'invoices','addLabel'=>'New Invoice','action'=>'create_invoice','columns'=>[['invoice_number','Invoice','strong'],['business_name','Client','text'],['issue_date','Issued','date'],['due_date','Due','date'],['total','Total','money'],['amount_paid','Paid','money'],['amount_due','Balance','money'],['status','Status','invoice_status']], 'fields'=>[['client_id','Client','select',true,$o['clients']],['project_id','Project','select',false,$o['projects']],['package_id','Package','select',false,$o['packages']],['description','Line item','textarea',true],['amount','Subtotal','number',true],['discount','Discount','number',false,null,0],['tax_percent','Tax %','number',false,null,0],['due_date','Due date','date',true,null,date('Y-m-d',strtotime('+14 days'))],['notes','Notes','textarea',false]]]; }
-    private function teamPage(array $o): array { return ['title'=>'Team','subtitle'=>'Capacity, access, cost, and active assignments.','route'=>'team','addLabel'=>'New Employee','action'=>'create_employee','columns'=>[['name','Employee','strong'],['job_title','Role','text'],['department','Department','text'],['login_user_email','System login','text'],['hourly_cost','Internal cost','money_hour'],['hours_week','Hours / 7d','hours'],['open_tasks','Open tasks','number'],['status','Status','badge']], 'fields'=>[['name','Full name','text',true],['email','Email','email',true],['phone','Phone','text',false],['job_title','Job title','text',false],['department','Department','select',true,$this->simpleOptions(array_combine(['Development','Design','Social Media','Photography','Videography','Sales','Marketing','Administration'],['Development','Design','Social Media','Photography','Videography','Sales','Marketing','Administration']))],['skills','Skills','textarea',false],['hourly_cost','Hourly internal cost','number',true],['capacity_hours','Weekly capacity','number',true,null,40],['create_login','Create system login','checkbox',false],['role_id','Login role','select',false,$o['roles']],['password','Temporary password','password',false]]]; }
+    private function teamPage(array $o): array { return ['title'=>'Team','subtitle'=>'Capacity, access, cost, and active assignments.','route'=>'team','addLabel'=>'New Employee','action'=>'create_employee','columns'=>[['name','Employee','team_member'],['job_title','Role','text'],['department','Department','text'],['login_user_email','System login','text'],['hourly_cost','Internal cost','money_hour'],['hours_week','Hours / 7d','hours'],['open_tasks','Open tasks','number'],['status','Status','badge']], 'fields'=>[['name','Full name','text',true],['email','Email','email',true],['phone','Phone','text',false],['job_title','Job title','text',false],['department','Department','select',true,$this->simpleOptions(array_combine(['Development','Design','Social Media','Photography','Videography','Sales','Marketing','Administration'],['Development','Design','Social Media','Photography','Videography','Sales','Marketing','Administration']))],['skills','Skills','textarea',false],['profile_photo','Profile photo','file',false],['hourly_cost','Hourly internal cost','number',true],['capacity_hours','Weekly capacity','number',true,null,40],['create_login','Create system login','checkbox',false],['role_id','Login role','select',false,$o['roles']],['password','Temporary password','password',false]]]; }
     private function timePage(array $o): array { return ['title'=>'Time Tracking','subtitle'=>'Measure delivery effort and protect project profitability.','route'=>'time','addLabel'=>'Log Time','action'=>'log_time','columns'=>[['entry_date','Date','date'],['employee_name','Employee','text'],['business_name','Client','text'],['project_name','Project','text'],['description','Work performed','text'],['hours','Hours','hours'],['internal_cost','Internal cost','money'],['billable','Billable','yesno']], 'fields'=>[['employee_id','Employee','select',true,$o['employees']],['project_id','Project','select',true,$o['projects']],['entry_date','Date','date',true,null,date('Y-m-d')],['hours','Hours','number',true],['description','Work performed','textarea',true],['billable','Billable time','checkbox',false,null,1]]]; }
     private function simpleOptions(array $map): array { $result=[]; foreach($map as $id=>$name){$result[]=['id'=>$id,'name'=>$name];} return $result; }
 

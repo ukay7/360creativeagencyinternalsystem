@@ -49,7 +49,9 @@ final class Auth
         $role = DB::table('roles')->where('id', $user->role_id)->first(['name', 'slug']);
         $data['role_name'] = $role->name ?? 'User';
         $data['role_slug'] = $role->slug ?? '';
-        $data['employee_id'] = DB::table('employees')->where('user_id', $user->id)->value('id');
+        $employee = DB::table('employees')->where('user_id', $user->id)->first(['id', 'profile_photo_path']);
+        $data['employee_id'] = $employee->id ?? null;
+        $data['profile_photo_path'] = $employee->profile_photo_path ?? null;
         $data['client_id'] = DB::table('clients')->where('portal_user_id', $user->id)->value('id');
 
         return $data;

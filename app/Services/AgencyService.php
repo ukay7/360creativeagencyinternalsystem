@@ -1959,7 +1959,7 @@ final class AgencyService
         });
     }
 
-    public function createEmployee(array $input): int
+    public function createEmployee(array $input, ?UploadedFile $profilePhoto = null): int
     {
         $this->required($input, ['name','email','department','hourly_cost']);
         $email = mb_strtolower(trim((string)$input['email']));
@@ -1973,25 +1973,31 @@ final class AgencyService
             throw new InvalidArgumentException('That email is already used by another system login.');
         }
 
-        return $this->db->transaction(function () use ($input, $email): int {
-            $userId = null;
-            if (!empty($input['create_login'])) {
-                if (strlen((string)($input['password'] ?? '')) < 10) {
-                    throw new InvalidArgumentException('Login passwords must be at least 10 characters.');
+        $profilePhotoPath = $this->storeEmployeeProfilePhoto($profilePhoto);
+        try {
+            return $this->db->transaction(function () use ($input, $email, $profilePhotoPath): int {
+                $userId = null;
+                if (!empty($input['create_login'])) {
+                    if (strlen((string)($input['password'] ?? '')) < 10) {
+                        throw new InvalidArgumentException('Login passwords must be at least 10 characters.');
+                    }
+                    $role = $this->db->first("SELECT id FROM roles WHERE id=? AND slug NOT IN ('super_admin','client')", [(int)($input['role_id'] ?? 0)]);
+                    if (! $role) {
+                        throw new InvalidArgumentException('Choose a valid employee login role.');
+                    }
+                    $userId = $this->db->insert('users', ['role_id'=>(int)$role['id'],'name'=>trim($input['name']),'email'=>$email,'password_hash'=>password_hash($input['password'],PASSWORD_DEFAULT),'status'=>'active','created_at'=>date('c'),'updated_at'=>date('c')]);
                 }
-                $role = $this->db->first("SELECT id FROM roles WHERE id=? AND slug NOT IN ('super_admin','client')", [(int)($input['role_id'] ?? 0)]);
-                if (! $role) {
-                    throw new InvalidArgumentException('Choose a valid employee login role.');
-                }
-                $userId = $this->db->insert('users', ['role_id'=>(int)$role['id'],'name'=>trim($input['name']),'email'=>$email,'password_hash'=>password_hash($input['password'],PASSWORD_DEFAULT),'status'=>'active','created_at'=>date('c'),'updated_at'=>date('c')]);
-            }
-            $id = $this->db->insert('employees', ['user_id'=>$userId,'name'=>trim($input['name']),'email'=>$email,'phone'=>trim($input['phone'] ?? ''),'job_title'=>trim($input['job_title'] ?? ''),'department'=>$input['department'],'skills'=>trim($input['skills'] ?? ''),'hourly_cost'=>$this->nonNegative($input['hourly_cost']),'capacity_hours'=>$this->nonNegative($input['capacity_hours'] ?? 40),'status'=>'active','created_at'=>date('c')]);
-            $this->audit('created','employee',$id,null,array_diff_key($input,['password'=>true]));
-            return $id;
-        });
+                $id = $this->db->insert('employees', ['user_id'=>$userId,'name'=>trim($input['name']),'email'=>$email,'phone'=>trim($input['phone'] ?? ''),'job_title'=>trim($input['job_title'] ?? ''),'department'=>$input['department'],'skills'=>trim($input['skills'] ?? ''),'profile_photo_path'=>$profilePhotoPath,'hourly_cost'=>$this->nonNegative($input['hourly_cost']),'capacity_hours'=>$this->nonNegative($input['capacity_hours'] ?? 40),'status'=>'active','created_at'=>date('c')]);
+                $this->audit('created','employee',$id,null,array_diff_key($input,['password'=>true])+['profile_photo_path'=>$profilePhotoPath]);
+                return $id;
+            });
+        } catch (\Throwable $exception) {
+            $this->deleteEmployeeProfilePhoto($profilePhotoPath);
+            throw $exception;
+        }
     }
 
-    public function updateEmployee(array $input): void
+    public function updateEmployee(array $input, ?UploadedFile $profilePhoto = null): void
     {
         if (! $this->isAdministrator()) {
             throw new InvalidArgumentException('Only administrators can edit team members.');
@@ -2070,6 +2076,11 @@ final class AgencyService
             'capacity_hours'=>$capacityHours,
             'status'=>$input['status'],
         ];
+        $newProfilePhotoPath = $this->storeEmployeeProfilePhoto($profilePhoto);
+        $removeProfilePhoto = ! empty($input['remove_profile_photo']) && $newProfilePhotoPath === null;
+        if ($newProfilePhotoPath !== null || $removeProfilePhoto) {
+            $employeeChanges['profile_photo_path'] = $newProfilePhotoPath;
+        }
         $before = ['employee'=>[
             'id'=>$employeeId,
             'name'=>$employee['name'],
@@ -2078,6 +2089,7 @@ final class AgencyService
             'job_title'=>$employee['job_title'] ?? '',
             'department'=>$employee['department'],
             'skills'=>$employee['skills'] ?? '',
+            'profile_photo_path'=>$employee['profile_photo_path'] ?? null,
             'hourly_cost'=>$employee['hourly_cost'],
             'capacity_hours'=>$employee['capacity_hours'],
             'status'=>$employee['status'],
@@ -2089,43 +2101,52 @@ final class AgencyService
             'status'=>$employee['login_status'] ?? null,
         ]];
 
-        $this->db->transaction(function () use ($employeeId, $employee, $employeeChanges, $loginUserId, $createLogin, $protectedLogin, $loginRole, $loginStatus, $password, $loginName, $loginEmail, $before): void {
-            $resolvedUserId = $loginUserId;
-            if ($createLogin) {
-                $resolvedUserId = $this->db->insert('users', [
-                    'role_id'=>(int)$loginRole['id'],
-                    'name'=>$loginName,
-                    'email'=>$loginEmail,
-                    'password_hash'=>password_hash($password, PASSWORD_DEFAULT),
-                    'status'=>$loginStatus,
-                    'created_at'=>date('c'),
-                    'updated_at'=>date('c'),
-                ]);
-            } elseif ($loginUserId) {
-                $userChanges = ['name'=>$loginName,'email'=>$loginEmail,'updated_at'=>date('c')];
-                if (! $protectedLogin) {
-                    $userChanges['role_id'] = (int)$loginRole['id'];
-                    $userChanges['status'] = $loginStatus;
+        try {
+            $this->db->transaction(function () use ($employeeId, $employee, $employeeChanges, $loginUserId, $createLogin, $protectedLogin, $loginRole, $loginStatus, $password, $loginName, $loginEmail, $before): void {
+                $resolvedUserId = $loginUserId;
+                if ($createLogin) {
+                    $resolvedUserId = $this->db->insert('users', [
+                        'role_id'=>(int)$loginRole['id'],
+                        'name'=>$loginName,
+                        'email'=>$loginEmail,
+                        'password_hash'=>password_hash($password, PASSWORD_DEFAULT),
+                        'status'=>$loginStatus,
+                        'created_at'=>date('c'),
+                        'updated_at'=>date('c'),
+                    ]);
+                } elseif ($loginUserId) {
+                    $userChanges = ['name'=>$loginName,'email'=>$loginEmail,'updated_at'=>date('c')];
+                    if (! $protectedLogin) {
+                        $userChanges['role_id'] = (int)$loginRole['id'];
+                        $userChanges['status'] = $loginStatus;
+                    }
+                    if ($password !== '') {
+                        $userChanges['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
+                    }
+                    $this->db->update('users', $loginUserId, $userChanges);
                 }
-                if ($password !== '') {
-                    $userChanges['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
-                }
-                $this->db->update('users', $loginUserId, $userChanges);
-            }
 
-            $this->db->update('employees', $employeeId, $employeeChanges + ['user_id'=>$resolvedUserId ?: null]);
-            $this->audit('updated', 'employee', $employeeId, $before, [
-                'employee'=>$employeeChanges + ['id'=>$employeeId],
-                'login'=>[
-                    'user_id'=>$resolvedUserId ?: null,
-                    'name'=>$resolvedUserId ? $loginName : null,
-                    'email'=>$resolvedUserId ? $loginEmail : null,
-                    'role_id'=>$protectedLogin ? ($employee['login_role_id'] ?? null) : ($loginRole['id'] ?? null),
-                    'status'=>$protectedLogin ? ($employee['login_status'] ?? null) : (($resolvedUserId ?: null) ? $loginStatus : null),
-                    'password_changed'=>$password !== '',
-                ],
-            ]);
-        });
+                $this->db->update('employees', $employeeId, $employeeChanges + ['user_id'=>$resolvedUserId ?: null]);
+                $this->audit('updated', 'employee', $employeeId, $before, [
+                    'employee'=>$employeeChanges + ['id'=>$employeeId],
+                    'login'=>[
+                        'user_id'=>$resolvedUserId ?: null,
+                        'name'=>$resolvedUserId ? $loginName : null,
+                        'email'=>$resolvedUserId ? $loginEmail : null,
+                        'role_id'=>$protectedLogin ? ($employee['login_role_id'] ?? null) : ($loginRole['id'] ?? null),
+                        'status'=>$protectedLogin ? ($employee['login_status'] ?? null) : (($resolvedUserId ?: null) ? $loginStatus : null),
+                        'password_changed'=>$password !== '',
+                    ],
+                ]);
+            });
+        } catch (\Throwable $exception) {
+            $this->deleteEmployeeProfilePhoto($newProfilePhotoPath);
+            throw $exception;
+        }
+
+        if (($newProfilePhotoPath !== null || $removeProfilePhoto) && ! empty($employee['profile_photo_path'])) {
+            $this->deleteEmployeeProfilePhoto((string)$employee['profile_photo_path']);
+        }
     }
 
     public function deleteEmployee(int $employeeId): void
@@ -2161,6 +2182,7 @@ final class AgencyService
             }
             $this->db->execute('DELETE FROM employees WHERE id=?', [$employeeId]);
         });
+        $this->deleteEmployeeProfilePhoto($employee['profile_photo_path'] ?? null);
     }
 
     public function logTime(array $input): int
@@ -2690,6 +2712,42 @@ final class AgencyService
     private function pipelineColor(string $color): string
     {
         return in_array($color, ['info','primary','warning','success','danger','purple','secondary'], true) ? $color : 'info';
+    }
+
+    private function storeEmployeeProfilePhoto(?UploadedFile $photo): ?string
+    {
+        if ($photo === null) { return null; }
+        if (! $photo->isValid()) { throw new InvalidArgumentException('Choose a valid profile photo.'); }
+        if ((int)$photo->getSize() > 5 * 1024 * 1024) { throw new InvalidArgumentException('The profile photo cannot be larger than 5 MB.'); }
+
+        $mime = (string)($photo->getMimeType() ?: '');
+        $extension = match ($mime) {
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+            default => throw new InvalidArgumentException('Use a JPG, PNG, or WebP profile photo.'),
+        };
+        $image = @getimagesize($photo->getPathname());
+        if (! is_array($image) || (int)($image[0] ?? 0) < 1 || (int)($image[1] ?? 0) < 1) {
+            throw new InvalidArgumentException('The selected profile photo is not a valid image.');
+        }
+
+        $directory = storage_path('app/private/profile-photos');
+        if (! is_dir($directory) && ! mkdir($directory, 0775, true) && ! is_dir($directory)) {
+            throw new InvalidArgumentException('The profile photo folder could not be prepared.');
+        }
+        $name = 'employee-'.bin2hex(random_bytes(18)).'.'.$extension;
+        $photo->move($directory, $name);
+
+        return $name;
+    }
+
+    private function deleteEmployeeProfilePhoto(?string $path): void
+    {
+        $name = basename((string)$path);
+        if ($name === '') { return; }
+        $file = storage_path('app/private/profile-photos/'.$name);
+        if (is_file($file)) { @unlink($file); }
     }
 
     private function required(array $input, array $fields): void
