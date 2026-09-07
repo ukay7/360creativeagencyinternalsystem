@@ -1962,18 +1962,30 @@ final class AgencyService
     public function createEmployee(array $input): int
     {
         $this->required($input, ['name','email','department','hourly_cost']);
-        if (!filter_var($input['email'], FILTER_VALIDATE_EMAIL)) {
+        $email = mb_strtolower(trim((string)$input['email']));
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new InvalidArgumentException('Enter a valid employee email address.');
         }
-        return $this->db->transaction(function () use ($input): int {
+        if ((int)$this->db->scalar('SELECT COUNT(*) FROM employees WHERE LOWER(email)=?', [$email])) {
+            throw new InvalidArgumentException('That email is already assigned to another team member.');
+        }
+        if (!empty($input['create_login']) && (int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE LOWER(email)=?', [$email])) {
+            throw new InvalidArgumentException('That email is already used by another system login.');
+        }
+
+        return $this->db->transaction(function () use ($input, $email): int {
             $userId = null;
             if (!empty($input['create_login'])) {
                 if (strlen((string)($input['password'] ?? '')) < 10) {
                     throw new InvalidArgumentException('Login passwords must be at least 10 characters.');
                 }
-                $userId = $this->db->insert('users', ['role_id'=>(int)$input['role_id'],'name'=>trim($input['name']),'email'=>trim($input['email']),'password_hash'=>password_hash($input['password'],PASSWORD_DEFAULT),'status'=>'active','created_at'=>date('c'),'updated_at'=>date('c')]);
+                $role = $this->db->first("SELECT id FROM roles WHERE id=? AND slug NOT IN ('super_admin','client')", [(int)($input['role_id'] ?? 0)]);
+                if (! $role) {
+                    throw new InvalidArgumentException('Choose a valid employee login role.');
+                }
+                $userId = $this->db->insert('users', ['role_id'=>(int)$role['id'],'name'=>trim($input['name']),'email'=>$email,'password_hash'=>password_hash($input['password'],PASSWORD_DEFAULT),'status'=>'active','created_at'=>date('c'),'updated_at'=>date('c')]);
             }
-            $id = $this->db->insert('employees', ['user_id'=>$userId,'name'=>trim($input['name']),'email'=>trim($input['email']),'phone'=>trim($input['phone'] ?? ''),'job_title'=>trim($input['job_title'] ?? ''),'department'=>$input['department'],'skills'=>trim($input['skills'] ?? ''),'hourly_cost'=>$this->nonNegative($input['hourly_cost']),'capacity_hours'=>$this->nonNegative($input['capacity_hours'] ?? 40),'status'=>'active','created_at'=>date('c')]);
+            $id = $this->db->insert('employees', ['user_id'=>$userId,'name'=>trim($input['name']),'email'=>$email,'phone'=>trim($input['phone'] ?? ''),'job_title'=>trim($input['job_title'] ?? ''),'department'=>$input['department'],'skills'=>trim($input['skills'] ?? ''),'hourly_cost'=>$this->nonNegative($input['hourly_cost']),'capacity_hours'=>$this->nonNegative($input['capacity_hours'] ?? 40),'status'=>'active','created_at'=>date('c')]);
             $this->audit('created','employee',$id,null,array_diff_key($input,['password'=>true]));
             return $id;
         });
@@ -1987,7 +1999,7 @@ final class AgencyService
 
         $this->required($input, ['employee_id','name','email','department','hourly_cost','capacity_hours','status']);
         $employeeId = (int)$input['employee_id'];
-        $employee = $this->db->first("SELECT e.*,u.id AS login_user_id,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE e.id=?", [$employeeId]);
+        $employee = $this->db->first("SELECT e.*,u.id AS login_user_id,u.email AS login_email,u.role_id AS login_role_id,u.status AS login_status,r.name AS login_role_name,r.slug AS login_role_slug FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE e.id=?", [$employeeId]);
         if (! $employee) {
             throw new InvalidArgumentException('The selected team member no longer exists.');
         }
@@ -2011,7 +2023,8 @@ final class AgencyService
         if ($capacityHours > 168) {
             throw new InvalidArgumentException('Weekly capacity cannot exceed 168 hours.');
         }
-        if ((int)$this->db->scalar('SELECT COUNT(*) FROM employees WHERE LOWER(email)=LOWER(?) AND id<>?', [$email,$employeeId])) {
+        $employeeEmailChanged = mb_strtolower(trim((string)$employee['email'])) !== $email;
+        if ($employeeEmailChanged && (int)$this->db->scalar('SELECT COUNT(*) FROM employees WHERE LOWER(email)=? AND id<>?', [$email,$employeeId])) {
             throw new InvalidArgumentException('That email is already assigned to another team member.');
         }
 
@@ -2022,8 +2035,9 @@ final class AgencyService
         $loginStatus = (string)($input['login_status'] ?? 'active');
         $protectedLogin = ($employee['login_role_slug'] ?? '') === 'super_admin';
 
-        if ($loginUserId || $createLogin) {
-            if ((int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE LOWER(email)=LOWER(?) AND id<>?', [$email,$loginUserId])) {
+        $loginEmailChanged = $loginUserId && mb_strtolower(trim((string)($employee['login_email'] ?? ''))) !== $email;
+        if ($createLogin || $loginEmailChanged) {
+            if ((int)$this->db->scalar('SELECT COUNT(*) FROM users WHERE LOWER(email)=? AND id<>?', [$email,$loginUserId])) {
                 throw new InvalidArgumentException('That email is already used by another system login.');
             }
         }
@@ -2099,6 +2113,41 @@ final class AgencyService
                     'password_changed'=>$password !== '',
                 ],
             ]);
+        });
+    }
+
+    public function deleteEmployee(int $employeeId): void
+    {
+        if (($this->auth->user()['role_slug'] ?? '') !== 'super_admin') {
+            throw new InvalidArgumentException('Only the Super Admin can permanently delete team members.');
+        }
+
+        $employee = $this->db->first("SELECT e.*,u.id AS login_user_id,r.slug AS login_role_slug FROM employees e LEFT JOIN users u ON u.id=e.user_id LEFT JOIN roles r ON r.id=u.role_id WHERE e.id=?", [$employeeId]);
+        if (! $employee) {
+            throw new InvalidArgumentException('The selected team member no longer exists.');
+        }
+
+        $currentUserId = (int)($this->auth->user()['id'] ?? 0);
+        $loginUserId = (int)($employee['login_user_id'] ?? 0);
+        if ($loginUserId === $currentUserId) {
+            throw new InvalidArgumentException('You cannot delete the account you are currently signed in with.');
+        }
+        if (($employee['login_role_slug'] ?? '') === 'super_admin') {
+            throw new InvalidArgumentException('A protected Super Admin account cannot be deleted.');
+        }
+
+        $this->db->transaction(function () use ($employee, $employeeId, $loginUserId): void {
+            $this->audit('deleted', 'employee', $employeeId, [
+                'id'=>$employeeId,
+                'name'=>$employee['name'],
+                'email'=>$employee['email'],
+                'login_user_id'=>$loginUserId ?: null,
+            ], null);
+
+            if ($loginUserId) {
+                $this->db->execute('DELETE FROM users WHERE id=?', [$loginUserId]);
+            }
+            $this->db->execute('DELETE FROM employees WHERE id=?', [$employeeId]);
         });
     }
 

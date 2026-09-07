@@ -1685,4 +1685,111 @@ class AgencySystemTest extends TestCase
 
         $this->assertDatabaseMissing('employees', ['id'=>$employee->id,'name'=>'Unauthorized Change']);
     }
+
+    public function test_super_admin_can_permanently_delete_a_team_member_without_deleting_history(): void
+    {
+        $superAdmin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $this->actingAs($superAdmin);
+        $developerRoleId = (int)DB::table('roles')->where('slug', 'developer')->value('id');
+        $userId = DB::table('users')->insertGetId([
+            'role_id'=>$developerRoleId,
+            'name'=>'Delete Team Member QA',
+            'email'=>'delete-team-member-qa@example.test',
+            'password_hash'=>password_hash('DeleteMember!2026', PASSWORD_DEFAULT),
+            'status'=>'active',
+            'created_at'=>now(),
+            'updated_at'=>now(),
+        ]);
+        $employeeId = DB::table('employees')->insertGetId([
+            'user_id'=>$userId,
+            'name'=>'Delete Team Member QA',
+            'email'=>'delete-team-member-qa@example.test',
+            'department'=>'Development',
+            'hourly_cost'=>45,
+            'capacity_hours'=>40,
+            'status'=>'active',
+            'created_at'=>now(),
+        ]);
+        $client = DB::table('clients')->orderBy('id')->first();
+        $project = DB::table('projects')->where('client_id', $client->id)->orderBy('id')->first();
+        $task = DB::table('project_tasks')->where('project_id', $project->id)->orderBy('id')->first();
+        DB::table('clients')->where('id', $client->id)->update(['account_manager_id'=>$employeeId]);
+        DB::table('projects')->where('id', $project->id)->update(['manager_id'=>$employeeId]);
+        DB::table('project_tasks')->where('id', $task->id)->update(['assigned_employee_id'=>$employeeId]);
+        DB::table('project_task_assignees')->updateOrInsert(
+            ['task_id'=>$task->id,'employee_id'=>$employeeId],
+            ['assigned_by'=>$superAdmin->id,'assigned_at'=>now()]
+        );
+        $timeEntryId = DB::table('time_entries')->insertGetId([
+            'employee_id'=>$employeeId,
+            'client_id'=>$client->id,
+            'project_id'=>$project->id,
+            'task_id'=>$task->id,
+            'entry_date'=>'2026-09-07',
+            'hours'=>2,
+            'description'=>'Historical work that must remain after the user is deleted.',
+            'billable'=>1,
+            'created_at'=>now(),
+        ]);
+        $noteId = DB::table('notes')->insertGetId([
+            'client_id'=>$client->id,
+            'project_id'=>$project->id,
+            'user_id'=>$userId,
+            'body'=>'Historical note that must remain after the user is deleted.',
+            'created_at'=>now(),
+        ]);
+
+        $this->get('/team')->assertOk()
+            ->assertSee('value="delete_employee"', false)
+            ->assertSee('Delete Team Member QA');
+
+        $this->post('/team', [
+            'action'=>'delete_employee',
+            'employee_id'=>$employeeId,
+        ])->assertRedirect('/team')->assertSessionHas('success', 'Team member and linked login permanently deleted.');
+
+        $this->assertDatabaseMissing('employees', ['id'=>$employeeId]);
+        $this->assertDatabaseMissing('users', ['id'=>$userId]);
+        $this->assertDatabaseMissing('project_task_assignees', ['employee_id'=>$employeeId]);
+        $this->assertDatabaseHas('clients', ['id'=>$client->id,'account_manager_id'=>null]);
+        $this->assertDatabaseHas('projects', ['id'=>$project->id,'manager_id'=>null]);
+        $this->assertDatabaseHas('project_tasks', ['id'=>$task->id,'assigned_employee_id'=>null]);
+        $this->assertDatabaseHas('time_entries', ['id'=>$timeEntryId,'employee_id'=>null]);
+        $this->assertDatabaseHas('notes', ['id'=>$noteId,'user_id'=>null]);
+        $this->assertDatabaseHas('audit_logs', ['action'=>'deleted','entity_type'=>'employee','entity_id'=>$employeeId]);
+    }
+
+    public function test_team_member_deletion_is_limited_to_super_admin_and_protects_current_account(): void
+    {
+        $superAdmin = User::query()->where('email', 'admin@agencyos.local')->firstOrFail();
+        $superAdminEmployee = DB::table('employees')->where('user_id', $superAdmin->id)->first();
+        $this->assertNotNull($superAdminEmployee);
+        $this->actingAs($superAdmin);
+
+        $this->post('/team', [
+            'action'=>'delete_employee',
+            'employee_id'=>$superAdminEmployee->id,
+        ])->assertRedirect('/team')->assertSessionHas('danger', 'You cannot delete the account you are currently signed in with.');
+        $this->assertDatabaseHas('employees', ['id'=>$superAdminEmployee->id]);
+
+        $adminRoleId = (int)DB::table('roles')->where('slug', 'admin')->value('id');
+        $adminUserId = DB::table('users')->insertGetId([
+            'role_id'=>$adminRoleId,
+            'name'=>'Delete Restricted Admin QA',
+            'email'=>'delete-restricted-admin-qa@example.test',
+            'password_hash'=>password_hash('RestrictedDelete!2026', PASSWORD_DEFAULT),
+            'status'=>'active',
+            'created_at'=>now(),
+            'updated_at'=>now(),
+        ]);
+        $target = DB::table('employees')->whereNull('user_id')->orderBy('id')->first();
+        $this->actingAs(User::query()->findOrFail($adminUserId));
+
+        $this->get('/team')->assertOk()->assertDontSee('value="delete_employee"', false);
+        $this->post('/team', [
+            'action'=>'delete_employee',
+            'employee_id'=>$target->id,
+        ])->assertRedirect('/team')->assertSessionHas('danger', 'Only the Super Admin can permanently delete team members.');
+        $this->assertDatabaseHas('employees', ['id'=>$target->id]);
+    }
 }
