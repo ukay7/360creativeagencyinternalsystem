@@ -37,7 +37,7 @@ final class AgencyController extends Controller
             'packages'=>'packages.access','services'=>'services.access','proposals'=>'proposals.access','projects'=>'projects.access','tasks'=>'tasks.access',
             'visits'=>'visits.access','content'=>'content.access','media'=>'media.access','media_download'=>'media.access','task_file'=>'tasks.access','task_file_view'=>'tasks.access','calendar'=>'calendar.access','invoices'=>'invoices.access','invoice'=>'invoices.access','invoice_pdf'=>'invoices.access','invoice_adjustment_pdf'=>'invoices.access','team'=>'team.access','time'=>'time.access',
             'reports'=>'reports.access','settings'=>'settings.access','audit'=>'audit.access','search'=>'dashboard.access','change_password'=>null,'profile_photo'=>null,
-            'quote_studio'=>'proposals.access','saved_quotes'=>'proposals.access','quote_view'=>'proposals.access','quote_settings'=>'settings.access',
+            'quote_studio'=>'proposals.access','saved_quotes'=>'proposals.access','quote_view'=>'proposals.access','quote_pdf'=>'proposals.access','quote_settings'=>'settings.access',
         ];
 
         if (! array_key_exists($route, $permissionMap)) {
@@ -63,6 +63,11 @@ final class AgencyController extends Controller
         }
         if ($route === 'invoice_adjustment_pdf') {
             return $this->laravelInvoiceAdjustmentPdf((int) ($request->query('id') ?? $request->route('extra', 0)));
+        }
+        if ($route === 'quote_pdf') {
+            $quote = $this->quotes->quote((int) ($request->query('id') ?? $request->route('extra', 0)));
+            if (! $quote) { abort(404); }
+            return $this->laravelQuotePdf($quote, $request);
         }
 
         if (($this->auth->user()['role_slug'] ?? '') === 'client' && in_array($route, ['dashboard','projects','tasks'], true)) {
@@ -126,6 +131,13 @@ final class AgencyController extends Controller
         $quote=$this->quotes->quoteByToken($token);
         if(!$quote){abort(404);}
         return response()->view('agency.quote-public',['quote'=>$quote,'company'=>config('quote_studio.company'),'locales'=>config('quote_studio.locales'),'publicMode'=>true]);
+    }
+
+    public function publicQuotePdf(Request $request, string $token): mixed
+    {
+        $quote = $this->quotes->quoteByToken($token);
+        if (! $quote) { abort(404); }
+        return $this->laravelQuotePdf($quote, $request);
     }
 
     public function setLanguage(Request $request): mixed
@@ -425,6 +437,36 @@ final class AgencyController extends Controller
         ]);
     }
 
+    private function laravelQuotePdf(array $quote, Request $request): mixed
+    {
+        $locale = (string) $request->query('lang', $quote['locale'] ?? 'en');
+        if (! in_array($locale, ['en', 'ar', 'he'], true)) { $locale = 'en'; }
+
+        $options = new Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('defaultFont', 'DejaVu Sans');
+        $options->set('chroot', [public_path()]);
+        $dompdf = new Dompdf($options);
+        $dompdf->loadHtml(view('agency.quote-pdf', [
+            'quote'=>$quote,
+            'company'=>config('quote_studio.company'),
+            'locale'=>$locale,
+        ])->render(), 'UTF-8');
+        $dompdf->setPaper('A4');
+        $dompdf->render();
+
+        $canvas = $dompdf->getCanvas();
+        $font = $dompdf->getFontMetrics()->getFont('Helvetica', 'normal');
+        $canvas->page_text(497, 814, '{PAGE_NUM} / {PAGE_COUNT}', $font, 7.5, [0.38, 0.36, 0.34]);
+
+        $proposalNumber = preg_replace('/[^A-Za-z0-9_-]+/', '-', (string) $quote['proposal_number']) ?: 'proposal';
+        return response($dompdf->output(), 200, [
+            'Content-Type'=>'application/pdf',
+            'Content-Disposition'=>'inline; filename="'.$proposalNumber.'.pdf"',
+            'X-Content-Type-Options'=>'nosniff',
+        ]);
+    }
+
     public function handle(): void
     {
         $route = preg_replace('/[^a-z_]/', '', (string)($_GET['route'] ?? 'dashboard')) ?: 'dashboard';
@@ -655,7 +697,7 @@ final class AgencyController extends Controller
 
     private function safeRoute(string $route): string
     {
-        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','task_file','task_file_view','visits','content','media','calendar','invoices','invoice','invoice_pdf','invoice_adjustment_pdf','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_settings','change_password'];
+        $allowed = ['login','dashboard','leads','lead','pipeline','discovery','clients','client','packages','services','proposals','contracts','projects','tasks','task_file','task_file_view','visits','content','media','calendar','invoices','invoice','invoice_pdf','invoice_adjustment_pdf','team','time','reports','settings','audit','quote_studio','saved_quotes','quote_view','quote_pdf','quote_settings','change_password'];
         return in_array($route,$allowed,true) ? $route : 'dashboard';
     }
 

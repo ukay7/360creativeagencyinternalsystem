@@ -398,8 +398,22 @@ class AgencySystemTest extends TestCase
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'service']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support']);
         $this->assertDatabaseHas('proposal_items',['proposal_id'=>$quote->id,'item_type'=>'support_contract']);
-        $this->get('/quote_view?id='.$quote->id.'&lang=ar')->assertOk()->assertSee('ملخص العرض')->assertSee($items[0]->description_ar);
+        $this->get('/quote_view?id='.$quote->id.'&lang=ar')->assertOk()
+            ->assertSee('ملخص العرض')
+            ->assertSee($items[0]->description_ar)
+            ->assertSee('/quote_pdf?id='.$quote->id.'&amp;lang=ar', false)
+            ->assertSee('target="_blank"', false)
+            ->assertDontSee('window.print()', false);
         $this->get('/quote/share/'.$quote->share_token.'?lang=he')->assertOk()->assertSee('סיכום הצעה')->assertSee($items[0]->description_he);
+        $pdf=$this->get('/quote_pdf?id='.$quote->id.'&lang=en');
+        $pdf->assertOk()
+            ->assertHeader('content-type','application/pdf')
+            ->assertHeader('content-disposition','inline; filename="'.$quote->proposal_number.'.pdf"');
+        $this->assertStringStartsWith('%PDF-', $pdf->getContent());
+        $this->assertGreaterThan(10000, strlen($pdf->getContent()));
+        $publicPdf=$this->get('/quote/share/'.$quote->share_token.'/pdf?lang=en');
+        $publicPdf->assertOk()->assertHeader('content-type','application/pdf');
+        $this->assertStringStartsWith('%PDF-', $publicPdf->getContent());
         $this->get('/quote_studio')->assertOk()->assertSee('Quote Journey Test')->assertSee('Prospect');
     }
 

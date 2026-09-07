@@ -8,6 +8,7 @@ Route::get('/', fn () => auth()->check() ? redirect(agency_url('dashboard')) : r
 Route::get('/login', [AuthController::class, 'create'])->name('login');
 Route::post('/login', [AuthController::class, 'store'])->name('login.store');
 Route::get('/quote/share/{token}', [AgencyController::class, 'publicQuote'])->where('token', '[A-Za-z0-9]+')->name('quote.public');
+Route::get('/quote/share/{token}/pdf', [AgencyController::class, 'publicQuotePdf'])->where('token', '[A-Za-z0-9]+')->name('quote.public.pdf');
 
 Route::middleware('auth')->group(function (): void {
     Route::post('/ui-language', [AgencyController::class, 'setLanguage'])->name('ui.language');
